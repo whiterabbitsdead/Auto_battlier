@@ -1,0 +1,6 @@
+{
+  "name": "Mythic Arena",
+  "description": "An epic Auto-Battler with themed commanders, complex synergies, and strategic fighter placement.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
