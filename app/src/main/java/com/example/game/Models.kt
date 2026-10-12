@@ -133,7 +133,7 @@ data class Commander(
     val activeAbility: CommanderActive? = null,
     val passiveAbility: CommanderPassive? = null
 ) {
-    val isAlive: Boolean get() = hp > 0 || health > 0
+    val isAlive: Boolean get() = hp > 0
 
     val effectiveAbility: SpecialAbility
         get() = specialAbility ?: SpecialAbility(
@@ -311,7 +311,7 @@ data class Fighter(
     var attacksSinceSkill: Int = 0,
     val enhancements: List<AbilityEnhancement> = emptyList()
 ) {
-    val isAlive: Boolean get() = hp > 0 || health > 0
+    val isAlive: Boolean get() = hp > 0
     val isStunned: Boolean get() = stunDuration > 0.0f
     val isRooted: Boolean get() = rootDuration > 0.0f || stunDuration > 0.0f
     val isDisarmed: Boolean get() = disarmDuration > 0.0f || stunDuration > 0.0f
@@ -332,6 +332,13 @@ data class Fighter(
     fun reduceCooldown(amount: Int = 1) {
         abilityCooldown = maxOf(0, abilityCooldown - amount)
         currentCooldown = abilityCooldown
+    }
+
+    fun takeDamage(amount: Int): Int {
+        val damage = amount.coerceAtLeast(0).coerceAtMost(hp.coerceAtLeast(0))
+        hp = (hp - damage).coerceAtLeast(0)
+        health = hp
+        return damage
     }
 
     fun resetCooldown(turns: Int = effectiveAbility.cooldownTurns) {

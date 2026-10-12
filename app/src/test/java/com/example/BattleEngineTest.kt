@@ -228,6 +228,34 @@ class BattleEngineTest {
     }
 
     @Test
+    fun testCommanderAbilityDamageDefeatsFighter() {
+        val commander = Commander(
+            name = "Commander",
+            activeAbility = com.example.game.CommanderActive(
+                type = com.example.game.CommanderActiveType.SINGLE_TARGET_DMG,
+                value = 100,
+                cooldownTurns = 3,
+                name = "Finisher",
+                description = "Defeats one enemy"
+            )
+        )
+        val player = Fighter(name = "Ally", hp = 100, isPlayer = true)
+        val enemy = Fighter(name = "Enemy", hp = 50, isPlayer = false)
+        val state = BattleState(
+            playerCommander = commander,
+            playerFighters = listOf(player),
+            opponentFighters = listOf(enemy),
+            isBattleActive = true
+        )
+
+        val updated = BattleEngine().processTurn(state)
+
+        assertEquals(0, updated.opponentFighters.single().hp)
+        assertEquals(0, updated.opponentFighters.single().health)
+        assertFalse(updated.opponentFighters.single().isAlive)
+    }
+
+    @Test
     fun testSpecialAbilityTriggerInTurnProcessing() {
         val deterministicRandom = object : Random() {
             override fun nextDouble(): Double = 0.5

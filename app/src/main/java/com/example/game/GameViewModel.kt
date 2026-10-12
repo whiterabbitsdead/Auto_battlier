@@ -483,8 +483,7 @@ class GameViewModel : ViewModel() {
             val ultName = aCmd?.activeAbility?.name ?: "Dominion Cataclysm"
             val ultDmg = aCmd?.activeAbility?.value ?: 50
             newPlayerFighters.filter { it.isAlive && it.startY >= 0 }.forEach { target ->
-                target.hp -= ultDmg
-                target.health = target.hp
+                target.takeDamage(ultDmg)
                 newDamageEffects.add(DamageEffect(x = target.x, y = target.y, damage = ultDmg))
             }
             newLogs = listOf("🔥 [ENEMY COMMANDER ULTIMATE] ${aCmd?.name ?: "Opponent"} unleashes [$ultName] for $ultDmg AOE DMG!") + newLogs
@@ -535,7 +534,7 @@ class GameViewModel : ViewModel() {
                         newLogs = listOf("💚 ${currentFighter.name} casts [${ability.name}] healing ${healTarget.name} for +$actual HP!") + newLogs
                         newDamageEffects.add(DamageEffect(x = healTarget.x, y = healTarget.y, damage = -actual))
                         if (ability.damage > 0 && target.isAlive) {
-                            target.hp -= ability.damage
+                            target.takeDamage(ability.damage)
                             newLogs = listOf("✨ [${ability.name}] smites ${target.name} for ${ability.damage} DMG!") + newLogs
                             newDamageEffects.add(DamageEffect(x = target.x, y = target.y, damage = ability.damage))
                             if (!target.isAlive) newLogs = listOf("💀 ${target.name} is defeated!") + newLogs
@@ -547,8 +546,7 @@ class GameViewModel : ViewModel() {
                         newLogs = listOf("⚡ ${currentFighter.name} unleashes [${ability.name}] ($hits-strike combo)!") + newLogs
                         for (i in 1..hits) {
                             val activeTarget = if (target.isAlive) target else (enemies.firstOrNull { it.isAlive && it.startY >= 0 } ?: break)
-                            activeTarget.hp -= hitDmg
-                            activeTarget.health = activeTarget.hp
+                            activeTarget.takeDamage(hitDmg)
                             newLogs = listOf("💥 Combo $i/$hits: ${currentFighter.name} strikes ${activeTarget.name} for $hitDmg DMG!") + newLogs
                             newDamageEffects.add(DamageEffect(x = activeTarget.x, y = activeTarget.y, damage = hitDmg))
                             if (!activeTarget.isAlive) {
@@ -558,8 +556,7 @@ class GameViewModel : ViewModel() {
                     }
                     else -> {
                         val ultDmg = maxOf(ability.damage, currentFighter.magAttack * 2 + 50)
-                        target.hp -= ultDmg
-                        target.health = target.hp
+                        target.takeDamage(ultDmg)
                         newLogs = listOf("✨ ${currentFighter.name} unleashes [${ability.name}]! Deals $ultDmg DMG to ${target.name}!") + newLogs
                         newDamageEffects.add(DamageEffect(x = target.x, y = target.y, damage = ultDmg, isCrit = true))
                         
@@ -567,7 +564,7 @@ class GameViewModel : ViewModel() {
                         if (state.activeSynergies.any { it.startsWith("Illumins (4)") } && currentFighter.isPlayer) {
                             val novaDmg = 50
                             enemies.filter { it.isAlive }.forEach { 
-                                it.hp -= novaDmg; it.health = it.hp
+                                it.takeDamage(novaDmg)
                                 newDamageEffects.add(DamageEffect(x = it.x, y = it.y, damage = novaDmg))
                             }
                             newLogs = listOf("✨ [Illumins (4) Supernova] Cosmic cataclysm strikes all enemies for $novaDmg DMG!") + newLogs
@@ -606,13 +603,13 @@ class GameViewModel : ViewModel() {
                         val secondEnemy = enemies.firstOrNull { it.isAlive && it.id != target.id }
                         if (secondEnemy != null) {
                             val sparkDmg = if (state.activeSynergies.any { it.startsWith("Elemos (3)") }) 35 else 20
-                            secondEnemy.hp -= sparkDmg
+                            secondEnemy.takeDamage(sparkDmg)
                             newLogs = listOf("⚡ [Static Current] Spark zaps ${secondEnemy.name} for $sparkDmg DMG!") + newLogs
                             newDamageEffects.add(DamageEffect(x = secondEnemy.x, y = secondEnemy.y, damage = sparkDmg))
                         }
                     }
 
-                    target.hp -= finalDmg
+                    target.takeDamage(finalDmg)
                     newDamageEffects.add(DamageEffect(x = target.x, y = target.y, damage = finalDmg, isCrit = result.isCrit))
                     currentFighter.mana = minOf(100, currentFighter.mana + 15)
                     target.mana = minOf(100, target.mana + 10)
@@ -620,7 +617,7 @@ class GameViewModel : ViewModel() {
                     // Stacked Synergy Skill: Tuls (3) Spiked Bastion Retribution
                     if (target.faction == Faction.TULS && state.activeSynergies.any { it.startsWith("Tuls (3)") } && target.isPlayer) {
                         val thornsDmg = maxOf(8, (finalDmg * 0.30).toInt())
-                        currentFighter.hp -= thornsDmg
+                        currentFighter.takeDamage(thornsDmg)
                         newLogs = listOf("🛡️ [Spiked Bastion Retribution] ${target.name} reflects $thornsDmg thorns DMG to ${currentFighter.name}!") + newLogs
                         newDamageEffects.add(DamageEffect(x = currentFighter.x, y = currentFighter.y, damage = thornsDmg))
                     }
@@ -631,7 +628,7 @@ class GameViewModel : ViewModel() {
                 } else if (result.isDodge) {
                     // Stacked Synergy Skill: Feet Work (2) Mach Counter-Strike
                     if (target.faction == Faction.FEET_WORK && state.activeSynergies.any { it.startsWith("Feet Work (2)") } && target.isPlayer) {
-                        currentFighter.hp -= 40
+                        currentFighter.takeDamage(40)
                         newLogs = listOf("⚡ [Mach Counter-Strike] ${target.name} dodged and counter-kicked ${currentFighter.name} for 40 DMG!") + newLogs
                         newDamageEffects.add(DamageEffect(x = currentFighter.x, y = currentFighter.y, damage = 40))
                         if (!currentFighter.isAlive) {
@@ -691,7 +688,7 @@ class GameViewModel : ViewModel() {
                         // Ironfist Magnus: Shield Slam & Vanguard Bulwark
                         // 60 AOE Physical DMG to all enemies + Stun, +70 Shield & +20 DEF to allies
                         updatedEnemies.filter { it.isAlive }.forEach { e ->
-                            e.hp -= 60; e.health = e.hp
+                            e.takeDamage(60)
                             e.stunDuration = 1.0f
                             newDamageEffects.add(DamageEffect(x = e.x, y = e.y, damage = 60))
                         }
@@ -706,7 +703,7 @@ class GameViewModel : ViewModel() {
                         // Archmage Elara: Arcane Cataclysm & Mana Surge
                         // 80 AOE Magic DMG to all enemies, restores 100 Mana to all allies
                         updatedEnemies.filter { it.isAlive }.forEach { e ->
-                            e.hp -= 80; e.health = e.hp
+                            e.takeDamage(80)
                             newDamageEffects.add(DamageEffect(x = e.x, y = e.y, damage = 80))
                         }
                         updatedAllies.filter { it.isAlive && it.startY >= 0 }.forEach { a ->
@@ -719,7 +716,7 @@ class GameViewModel : ViewModel() {
                         // Executes lowest HP enemy for 160 True DMG, gives all allies +50% Dodge for 3 ticks
                         val lowestEnemy = updatedEnemies.filter { it.isAlive }.minByOrNull { it.hp }
                         if (lowestEnemy != null) {
-                            lowestEnemy.hp -= 160; lowestEnemy.health = lowestEnemy.hp
+                            lowestEnemy.takeDamage(160)
                             newDamageEffects.add(DamageEffect(x = lowestEnemy.x, y = lowestEnemy.y, damage = 160, isCrit = true))
                         }
                         updatedAllies.filter { it.isAlive && it.startY >= 0 }.forEach { a ->
@@ -730,7 +727,7 @@ class GameViewModel : ViewModel() {
                     else -> {
                         // Generic Ultimate: 55 AOE True DMG + +45 HP heal to allies
                         updatedEnemies.filter { it.isAlive }.forEach { e ->
-                            e.hp -= 55; e.health = e.hp
+                            e.takeDamage(55)
                             newDamageEffects.add(DamageEffect(x = e.x, y = e.y, damage = 55))
                         }
                         updatedAllies.filter { it.isAlive && it.startY >= 0 }.forEach { a ->
@@ -785,7 +782,7 @@ class GameViewModel : ViewModel() {
                 val target = updatedEnemies.filter { it.isAlive }.maxByOrNull { it.physAttack + it.magAttack + it.damage }
                 if (target != null) {
                     val dmg = 70
-                    target.hp -= dmg; target.health = target.hp
+                    target.takeDamage(dmg)
                     target.disarmDuration = 2f
                     newDamageEffects.add(DamageEffect(x = target.x, y = target.y, damage = dmg, isCrit = true))
                     val logMsg = "🎯 [PRECISION STRIKE] Commander snipes ${target.name} for 70 True DMG & Disarms for 2 turns!"

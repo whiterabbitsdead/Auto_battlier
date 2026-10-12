@@ -667,7 +667,7 @@ private fun ArmyHealthOverviewCard(battleState: BattleState) {
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "Commander HP: ${battleState.playerCommander?.health ?: 100}",
+                            text = "Commander HP: ${battleState.playerCommander?.hp ?: 100}",
                             fontSize = 9.sp,
                             color = Color(0xFF10B981),
                             fontWeight = FontWeight.SemiBold
@@ -699,7 +699,7 @@ private fun ArmyHealthOverviewCard(battleState: BattleState) {
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "Commander HP: ${battleState.opponentCommander?.health ?: 100}",
+                            text = "Commander HP: ${battleState.opponentCommander?.hp ?: 100}",
                             fontSize = 9.sp,
                             color = Color(0xFFEF4444),
                             fontWeight = FontWeight.SemiBold

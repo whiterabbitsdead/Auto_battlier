@@ -55,6 +55,24 @@ class CoreEntitiesTest {
     }
 
     @Test
+    fun testFighterDamageUpdatesHealthAndAliveStatus() {
+        val fighter = Fighter(name = "Training Dummy", hp = 20)
+
+        fighter.takeDamage(25)
+
+        assertEquals(0, fighter.hp)
+        assertEquals(0, fighter.health)
+        assertFalse(fighter.isAlive)
+    }
+
+    @Test
+    fun testCommanderAliveStatusUsesCurrentHp() {
+        val defeatedCommander = Commander(name = "Defeated Commander", hp = 0)
+
+        assertFalse(defeatedCommander.isAlive)
+    }
+
+    @Test
     fun testCommanderDefaultAbilityGeneration() {
         val commander = Commander(
             name = "Steel Bastion",

@@ -438,13 +438,13 @@ class BattleEngine(
             CommanderActiveType.SINGLE_TARGET_DMG -> {
                 val target = enemies.filter { it.isAlive }.minByOrNull { it.hp }
                 if (target != null) {
-                    target.hp = maxOf(0, target.hp - active.value)
+                    target.takeDamage(active.value)
                     logs.add(0, "💥 ${active.name} strikes ${target.name} for ${active.value} damage!")
                 }
             }
             CommanderActiveType.AOE_DMG -> {
                 enemies.filter { it.isAlive }.forEach {
-                    it.hp = maxOf(0, it.hp - active.value)
+                    it.takeDamage(active.value)
                 }
                 logs.add(0, "🔥 ${active.name} blasts all enemies for ${active.value} damage!")
             }
@@ -452,6 +452,7 @@ class BattleEngine(
                 val target = allies.filter { it.isAlive }.minByOrNull { it.hp }
                 if (target != null) {
                     target.hp = minOf(target.maxHp, target.hp + active.value)
+                    target.health = target.hp
                     logs.add(0, "💚 ${active.name} restores ${active.value} HP to ${target.name}!")
                 }
             }
@@ -537,8 +538,7 @@ class BattleEngine(
     }
 
     private fun applyDamage(fighter: Fighter, amount: Int) {
-        fighter.health = maxOf(0, fighter.health - amount)
-        fighter.hp = fighter.health
+        fighter.takeDamage(amount)
     }
 
     private fun recordDamage(
