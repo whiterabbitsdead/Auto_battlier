@@ -317,6 +317,7 @@ object AiOpponentManager {
                             physDefense = pDef,
                             maxHp = mHp,
                             hp = hp,
+                            health = hp,
                             dodgeChance = dodge
                         )
                         inventory.remove(item)

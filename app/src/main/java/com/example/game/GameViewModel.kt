@@ -399,6 +399,7 @@ class GameViewModel : ViewModel() {
                         physDefense = newPDef,
                         maxHp = newMaxHp,
                         hp = newHp,
+                        health = newHp,
                         dodgeChance = newDodge
                     )
                 }
@@ -1124,6 +1125,7 @@ class GameViewModel : ViewModel() {
                     physDefense = newPDef,
                     maxHp = newMaxHp,
                     hp = newHp,
+                    health = newHp,
                     dodgeChance = newDodge
                 )
             } else f
