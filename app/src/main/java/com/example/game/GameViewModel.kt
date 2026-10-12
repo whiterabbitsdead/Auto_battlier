@@ -96,6 +96,7 @@ class GameViewModel : ViewModel() {
                 newF.maxHp += 30
                 newF.hp += 30
             }
+            newF.health = newF.hp
             newF
         }
     }
@@ -895,6 +896,7 @@ class GameViewModel : ViewModel() {
             it.copy(
                 hp = newMaxHp, 
                 maxHp = newMaxHp,
+                health = newMaxHp,
                 x = it.startX, 
                 y = it.startY
             ) 

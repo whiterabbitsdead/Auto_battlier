@@ -106,6 +106,7 @@ object AiOpponentManager {
                 newF.maxHp += 30
                 newF.hp += 30
             }
+            newF.health = newF.hp
             newF
         }
     }
