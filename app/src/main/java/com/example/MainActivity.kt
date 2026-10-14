@@ -11,6 +11,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.material3.Button
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.game.BattleBoardScreen
@@ -18,6 +23,7 @@ import com.example.game.BattleVisualizationScreen
 import com.example.game.CommanderSelectionScreen
 import com.example.game.GameOverScreen
 import com.example.game.GameViewModel
+import com.example.game.MockBattleScreen
 import com.example.game.Screen
 import com.example.ui.theme.MyApplicationTheme
 
@@ -48,7 +54,19 @@ fun GameApp(modifier: Modifier = Modifier) {
     val viewModel: GameViewModel = viewModel()
     val state by viewModel.uiState.collectAsState()
 
+    var showMockBattle by remember { mutableStateOf(false) }
+
     Box(modifier = modifier.fillMaxSize()) {
+        if (showMockBattle) {
+            MockBattleScreen(onBack = { showMockBattle = false })
+            return@Box
+        }
+        if (state.currentScreen == Screen.COMMANDER_SELECTION) {
+            Button(
+                onClick = { showMockBattle = true },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(8.dp)
+            ) { androidx.compose.material3.Text("Mock Battle") }
+        }
         when (state.currentScreen) {
             Screen.COMMANDER_SELECTION -> CommanderSelectionScreen(viewModel)
             Screen.BATTLE_BOARD -> BattleBoardScreen(viewModel)
