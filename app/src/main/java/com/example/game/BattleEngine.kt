@@ -18,7 +18,9 @@ class BattleEngine(
         val isDodge: Boolean,
         val isCrit: Boolean,
         val isMagic: Boolean,
-        val logMessage: String
+        val logMessage: String,
+        val hitSector: HitSector = HitSector.FRONTAL,
+        val directionalEvent: DirectionalCombatEvent? = null
     )
 
     /**
@@ -31,18 +33,24 @@ class BattleEngine(
 
     /**
      * Detailed combat calculation taking into account accuracy, dodge, physical vs magic stats,
-     * equipment bonuses, star levels, critical strike rolls, and shield absorption.
+     * equipment bonuses, star levels, critical strike rolls, directional armor penetration, and shield absorption.
      * Unified with [CombatCalculator].
      */
-    fun calculateDetailedDamage(attacker: Fighter, target: Fighter): DamageCalculation {
-        val result = CombatCalculator.calculateAttack(attacker, target, random)
+    fun calculateDetailedDamage(
+        attacker: Fighter,
+        target: Fighter,
+        targetAllies: List<Fighter> = emptyList()
+    ): DamageCalculation {
+        val result = CombatCalculator.calculateAttack(attacker, target, random, targetAllies)
         return DamageCalculation(
             damage = result.damage,
             isHit = result.isHit,
             isDodge = result.isDodge,
             isCrit = result.isCrit,
             isMagic = result.isMagic,
-            logMessage = result.logMessage
+            logMessage = result.logMessage,
+            hitSector = result.hitSector,
+            directionalEvent = result.directionalEvent
         )
     }
 
@@ -188,8 +196,16 @@ class BattleEngine(
             val aliveEnemies = enemies.filter { it.isAlive && (!it.isPlayer || it.startY >= 0) }
             if (aliveEnemies.isEmpty()) break
 
-            // Target the closest living enemy
-            val target = aliveEnemies.minByOrNull { distance(currentActor, it) } ?: continue
+            // 1. Taunt enforcement: if taunted, must target the taunter if still alive
+            val taunter = currentActor.tauntedById?.let { tId -> aliveEnemies.find { it.id == tId } }
+            // 2. Engagement locking: if already engaged in melee with an enemy who is alive and adjacent, commit to them
+            val engagedTarget = currentActor.engagedTargetId?.let { eId -> aliveEnemies.find { it.id == eId && distance(currentActor, it) <= 1 } }
+            // 3. Assassin/skirmisher targeting: assassins prioritize low HP or backline targets
+            val target = taunter ?: engagedTarget ?: if (currentActor.fighterClass == FighterClass.ASSASSIN || currentActor.fighterClass == FighterClass.CONVICT) {
+                aliveEnemies.minByOrNull { it.health.toFloat() / maxOf(1, it.maxHp) } ?: aliveEnemies.minByOrNull { distance(currentActor, it) } ?: continue
+            } else {
+                aliveEnemies.minByOrNull { distance(currentActor, it) } ?: continue
+            }
             val dist = distance(currentActor, target)
 
             val ability = currentActor.effectiveAbility
@@ -202,6 +218,15 @@ class BattleEngine(
                 currentActor.mana = 0
                 currentActor.resetCooldown(ability.cooldownTurns)
                 triggeredAbilities.add(ability)
+
+                // Tank or taunt CC ability: Anchor facing and force taunt on enemies in range
+                if (currentActor.fighterClass == FighterClass.TANK || ability.ccType == CCType.TAUNT) {
+                    aliveEnemies.filter { distance(currentActor, it) <= 2 }.forEach { enemy ->
+                        enemy.tauntedById = currentActor.id
+                        enemy.turnTowards(currentActor.x, currentActor.y)
+                        newTurnLogs.add("📢 [Taunt Anchor] ${currentActor.name} taunts ${enemy.name}, forcing them to face the frontline!")
+                    }
+                }
 
                 when {
                     // Unique Effect: Healing (Single Ally, All Allies, or Self)
@@ -325,9 +350,21 @@ class BattleEngine(
                     }
                 }
             } else if (dist <= currentActor.attackRange) {
-                // Standard Attack
-                    val calc = calculateDetailedDamage(currentActor, target)
-                    newTurnLogs.add(calc.logMessage)
+                // Attacker turns towards the target (respecting turning inertia)
+                currentActor.turnTowards(target.x, target.y)
+
+                // Engagement locking for melee combat
+                if (dist <= 1) {
+                    currentActor.engagedTargetId = target.id
+                    if (target.engagedTargetId == null) {
+                        target.engagedTargetId = currentActor.id
+                    }
+                }
+
+                // Standard Attack with target's allies for Phalanx Interlocking Defense
+                val targetAllies = enemies.filter { it.isAlive && it.id != target.id }
+                val calc = calculateDetailedDamage(currentActor, target, targetAllies)
+                newTurnLogs.add(calc.logMessage)
 
                     if (calc.isHit && !calc.isDodge) {
                         var finalDamage = calc.damage
@@ -521,14 +558,24 @@ class BattleEngine(
         fight: Int = 1,
         activeSynergies: List<String> = emptyList()
     ): BattleState {
+        val playerCopy = playerFighters.map { f ->
+            val copy = f.copy()
+            if (copy.facing == FacingDirection.NORTH) copy.facing = FacingDirection.NORTH
+            copy
+        }
+        val opponentCopy = opponentFighters.map { f ->
+            val copy = f.copy()
+            if (copy.facing == FacingDirection.NORTH) copy.facing = FacingDirection.SOUTH
+            copy
+        }
         return BattleState(
             round = round,
             fight = fight,
             turn = 0,
             playerCommander = playerCommander,
             opponentCommander = opponentCommander,
-            playerFighters = playerFighters.map { it.copy() },
-            opponentFighters = opponentFighters.map { it.copy() },
+            playerFighters = playerCopy,
+            opponentFighters = opponentCopy,
             isBattleActive = true,
             battleResult = null,
             battleLogs = listOf("Battle Started - Round $round Fight $fight"),
@@ -557,40 +604,76 @@ class BattleEngine(
     }
 
     private fun moveTowards(actor: Fighter, target: Fighter, allUnits: List<Fighter>) {
-        val dx = target.x - actor.x
-        val dy = target.y - actor.y
+        val oldX = actor.x
+        val oldY = actor.y
+
+        // Tactical dynamics: If actor is an agile flanker or target is locked in combat with a frontline ally,
+        // navigate towards target's rear or flank rather than frontally charging into their shield arc!
+        val isFlanker = actor.fighterClass in listOf(FighterClass.ASSASSIN, FighterClass.CONVICT, FighterClass.HUNTERS) ||
+                (target.engagedTargetId != null && target.engagedTargetId != actor.id)
+
+        var destX = target.x
+        var destY = target.y
+
+        if (isFlanker) {
+            // Rear tile: opposite to target's facing vector
+            val rearX = (target.x - target.facing.dx).coerceIn(0, 7)
+            val rearY = (target.y - target.facing.dy).coerceIn(0, 7)
+            val rearOccupied = allUnits.any { it.isAlive && it.id != actor.id && it.x == rearX && it.y == rearY }
+
+            if (!rearOccupied && (rearX != target.x || rearY != target.y)) {
+                destX = rearX
+                destY = rearY
+            } else {
+                // Flank tile (perpendicular)
+                val flankX = (target.x + target.facing.dy).coerceIn(0, 7)
+                val flankY = (target.y - target.facing.dx).coerceIn(0, 7)
+                val flankOccupied = allUnits.any { it.isAlive && it.id != actor.id && it.x == flankX && it.y == flankY }
+                if (!flankOccupied && (flankX != target.x || flankY != target.y)) {
+                    destX = flankX
+                    destY = flankY
+                }
+            }
+        }
+
+        val dx = destX - actor.x
+        val dy = destY - actor.y
 
         val stepX = if (dx > 0) 1 else if (dx < 0) -1 else 0
         val stepY = if (dy > 0) 1 else if (dy < 0) -1 else 0
 
-        val oldX = actor.x
-        val oldY = actor.y
-
+        var moved = false
         if (abs(dx) >= abs(dy) && stepX != 0) {
             val candidateX = (actor.x + stepX).coerceIn(0, 7)
             val occupied = allUnits.any { it.isAlive && it.id != actor.id && it.x == candidateX && it.y == actor.y }
             if (!occupied) {
                 actor.x = candidateX
-                return
+                moved = true
             }
         }
 
-        if (stepY != 0) {
+        if (!moved && stepY != 0) {
             val candidateY = (actor.y + stepY).coerceIn(0, 7)
             val occupied = allUnits.any { it.isAlive && it.id != actor.id && it.x == actor.x && it.y == candidateY }
             if (!occupied) {
                 actor.y = candidateY
-                return
+                moved = true
             }
         }
 
         // Try alternative axis if primary was blocked
-        if (stepX != 0) {
+        if (!moved && stepX != 0) {
             val candidateX = (actor.x + stepX).coerceIn(0, 7)
             val occupied = allUnits.any { it.isAlive && it.id != actor.id && it.x == candidateX && it.y == actor.y }
             if (!occupied) {
                 actor.x = candidateX
+                moved = true
             }
+        }
+
+        // Update facing automatically upon movement (facing the direction of travel)
+        if (actor.x != oldX || actor.y != oldY) {
+            actor.facing = FacingDirection.fromDelta(actor.x - oldX, actor.y - oldY)
         }
     }
 
@@ -600,8 +683,12 @@ class BattleEngine(
         fun calculateDamage(attacker: Fighter, target: Fighter): Int =
             defaultEngine.calculateDamage(attacker, target)
 
-        fun calculateDetailedDamage(attacker: Fighter, target: Fighter): DamageCalculation =
-            defaultEngine.calculateDetailedDamage(attacker, target)
+        fun calculateDetailedDamage(
+            attacker: Fighter,
+            target: Fighter,
+            targetAllies: List<Fighter> = emptyList()
+        ): DamageCalculation =
+            defaultEngine.calculateDetailedDamage(attacker, target, targetAllies)
 
         fun processTurn(currentState: BattleState): BattleState =
             defaultEngine.processTurn(currentState)
