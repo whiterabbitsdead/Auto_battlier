@@ -6,11 +6,16 @@ import com.example.game.BattleEngine
 import com.example.game.BattleResult
 import com.example.game.BattleState
 import com.example.game.Commander
+import com.example.game.CombatCalculator
+import com.example.game.DirectionalCombatEvent
 import com.example.game.Equipment
 import com.example.game.EquipmentType
+import com.example.game.FacingDirection
 import com.example.game.Faction
 import com.example.game.Fighter
 import com.example.game.FighterClass
+import com.example.game.HitSector
+import com.example.game.ShieldType
 import com.example.game.SpecialAbility
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -622,5 +627,338 @@ class BattleEngineTest {
         assertTrue("Wounded Warrior should have received healing", warriorAfter.health > 20)
         assertTrue("Log should mention healing Wounded Warrior",
             stateAfterTurn.battleLogs.any { it.contains("Astral Mend") && it.contains("Wounded Warrior") })
+    }
+
+    @Test
+    fun testDirectionalIncidentAngleAndHitSectorClassification() {
+        val target = Fighter(name = "Target", x = 3, y = 3, facing = FacingDirection.NORTH)
+
+        // Frontal: directly North (0°)
+        val frontAttacker = Fighter(name = "Front", x = 3, y = 2)
+        val frontAngle = CombatCalculator.calculateIncidentAngle(frontAttacker, target)
+        assertEquals(0.0, frontAngle, 0.01)
+        assertEquals(HitSector.FRONTAL, HitSector.fromIncidentAngle(frontAngle))
+
+        // Flanking: directly East (90°)
+        val flankAttacker = Fighter(name = "Flank", x = 4, y = 3)
+        val flankAngle = CombatCalculator.calculateIncidentAngle(flankAttacker, target)
+        assertEquals(90.0, flankAngle, 0.01)
+        assertEquals(HitSector.FLANKING, HitSector.fromIncidentAngle(flankAngle))
+
+        // Rear: directly South (180°)
+        val rearAttacker = Fighter(name = "Rear", x = 3, y = 4)
+        val rearAngle = CombatCalculator.calculateIncidentAngle(rearAttacker, target)
+        assertEquals(180.0, rearAngle, 0.01)
+        assertEquals(HitSector.REAR, HitSector.fromIncidentAngle(rearAngle))
+
+        // Sector boundaries check
+        assertEquals(HitSector.FRONTAL, HitSector.fromIncidentAngle(59.9))
+        assertEquals(HitSector.FLANKING, HitSector.fromIncidentAngle(60.1))
+        assertEquals(HitSector.FLANKING, HitSector.fromIncidentAngle(119.9))
+        assertEquals(HitSector.REAR, HitSector.fromIncidentAngle(120.1))
+    }
+
+    @Test
+    fun testBackstabDamageWith80PercentArmorPenetrationAndGuaranteedCrit() {
+        val deterministicRandom = object : Random() {
+            override fun nextDouble(): Double = 0.5 // Default would not crit (critChance is 0.0)
+        }
+        val target = Fighter(
+            name = "Iron Golem",
+            hp = 200,
+            health = 200,
+            physDefense = 50,
+            x = 3,
+            y = 3,
+            facing = FacingDirection.NORTH
+        )
+        val attacker = Fighter(
+            name = "Shadow Rogue",
+            physAttack = 50,
+            damage = 50,
+            critChance = 0.0,
+            x = 3,
+            y = 4, // Directly behind target (Rear Arc)
+            facing = FacingDirection.NORTH
+        )
+
+        val result = CombatCalculator.calculateAttack(attacker, target, deterministicRandom)
+
+        assertEquals(HitSector.REAR, result.hitSector)
+        assertTrue("Rear strike should guarantee critical hit", result.isCrit)
+        assertEquals(DirectionalCombatEvent.CRITICAL_BACKSTAB, result.directionalEvent)
+
+        // Effective Defense with 80% penetration = 50 * 0.2 = 10
+        // Base damage = 50 - 10 / 2 = 45
+        // Guaranteed 2.0x crit multiplier = 45 * 2.0 = 90
+        assertEquals(90, result.damage)
+    }
+
+    @Test
+    fun testFlankingAttackArmorBypassAndGlancingFlankEvent() {
+        val deterministicRandom = object : Random() {
+            override fun nextDouble(): Double = 0.9 // Prevent random crit
+        }
+        val target = Fighter(
+            name = "Armored Sentinel",
+            hp = 100,
+            health = 100,
+            physDefense = 50,
+            x = 3,
+            y = 3,
+            facing = FacingDirection.NORTH
+        )
+        val flankAttacker = Fighter(
+            name = "Skirmisher",
+            physAttack = 50,
+            damage = 50,
+            critChance = 0.0,
+            x = 4,
+            y = 3, // Flanking side (90°)
+            facing = FacingDirection.WEST
+        )
+
+        val result = CombatCalculator.calculateAttack(flankAttacker, target, deterministicRandom)
+
+        assertEquals(HitSector.FLANKING, result.hitSector)
+        assertEquals(DirectionalCombatEvent.GLANCING_FLANK, result.directionalEvent)
+
+        // Effective Defense with 40% bypass = 50 * 0.6 = 30
+        // Base damage = 50 - 30 / 2 = 35 (compared to 25 for frontal defense)
+        assertEquals(35, result.damage)
+    }
+
+    @Test
+    fun testDirectionalShieldDeflectionAndRearShieldBypass() {
+        val deterministicRandom = object : Random() {
+            override fun nextDouble(): Double = 0.5
+        }
+        val target = Fighter(
+            name = "Shield Tank",
+            hp = 100,
+            health = 100,
+            physDefense = 0,
+            shield = 40.0f,
+            shieldType = ShieldType.TOWER, // 180° front coverage
+            x = 3,
+            y = 3,
+            facing = FacingDirection.NORTH
+        )
+
+        // Frontal attack hits tower shield
+        val frontAttacker = Fighter(
+            name = "Front Attacker",
+            physAttack = 30,
+            damage = 30,
+            critChance = 0.0,
+            x = 3,
+            y = 2
+        )
+        val frontResult = CombatCalculator.calculateAttack(frontAttacker, target, deterministicRandom)
+        assertEquals(DirectionalCombatEvent.SHIELD_ARC_DEFLECTED, frontResult.directionalEvent)
+        assertEquals(30, frontResult.shieldAbsorbed)
+        assertEquals(0, frontResult.damage)
+        assertEquals(10.0f, target.shield, 0.01f)
+
+        // Rear attack completely bypasses the remaining shield
+        val rearAttacker = Fighter(
+            name = "Rear Assassin",
+            physAttack = 20,
+            damage = 20,
+            critChance = 0.0,
+            x = 3,
+            y = 4
+        )
+        val rearResult = CombatCalculator.calculateAttack(rearAttacker, target, deterministicRandom)
+        assertEquals(HitSector.REAR, rearResult.hitSector)
+        assertEquals(DirectionalCombatEvent.CRITICAL_BACKSTAB, rearResult.directionalEvent)
+        assertEquals(0, rearResult.shieldAbsorbed)
+        // Shield untouched by rear attack
+        assertEquals(10.0f, target.shield, 0.01f)
+        // Damage dealt directly to health (20 * 2.0 crit = 40)
+        assertEquals(40, rearResult.damage)
+    }
+
+    @Test
+    fun testPostureDepletionAndGuardBreakExposure() {
+        val deterministicRandom = object : Random() {
+            override fun nextDouble(): Double = 0.5
+        }
+        val target = Fighter(
+            name = "Guard Defender",
+            hp = 100,
+            health = 100,
+            physDefense = 40,
+            posture = 100.0f,
+            isGuardBroken = false,
+            x = 3,
+            y = 3,
+            facing = FacingDirection.NORTH
+        )
+
+        // Deplete all posture to break guard
+        target.depletePosture(100.0f)
+        assertEquals(0.0f, target.posture, 0.01f)
+        assertTrue("Target guard should be broken", target.isGuardBroken)
+
+        // Attack against guard-broken target
+        val attacker = Fighter(
+            name = "Attacker",
+            physAttack = 40,
+            damage = 40,
+            critChance = 0.0,
+            x = 3,
+            y = 2 // Frontal
+        )
+        val result = CombatCalculator.calculateAttack(attacker, target, deterministicRandom)
+        assertEquals(DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE, result.directionalEvent)
+
+        // Guard broken grants 50% defense bypass: 40 * 0.5 = 20 effective def
+        // Damage = 40 - 20 / 2 = 30 (instead of 40 - 20 = 20)
+        assertEquals(30, result.damage)
+    }
+
+    @Test
+    fun testPhalanxInterlockingFormationDefense() {
+        val deterministicRandom = object : Random() {
+            override fun nextDouble(): Double = 0.5
+        }
+        // Center Defender and Right Flank Ally forming an interlocking shield wall
+        val target = Fighter(
+            id = "target-1",
+            name = "Center Defender",
+            hp = 100,
+            health = 100,
+            physDefense = 40,
+            shieldType = ShieldType.STANDARD,
+            x = 3,
+            y = 3,
+            facing = FacingDirection.NORTH
+        )
+        val allyRight = Fighter(
+            id = "ally-1",
+            name = "Right Wing Ally",
+            hp = 100,
+            health = 100,
+            physDefense = 40,
+            shieldType = ShieldType.TOWER,
+            x = 4,
+            y = 3, // Adjacent on the right
+            facing = FacingDirection.NORTH // Facing same forward direction
+        )
+
+        // Attacker attempts to flank target from the right (x = 5)
+        val flankAttacker = Fighter(
+            name = "Flank Raider",
+            physAttack = 50,
+            damage = 50,
+            critChance = 0.0,
+            x = 5,
+            y = 3
+        )
+
+        val result = CombatCalculator.calculateAttack(
+            flankAttacker,
+            target,
+            deterministicRandom,
+            targetAllies = listOf(target, allyRight)
+        )
+
+        // Phalanx converts flanking attack into an interlocked frontal defense
+        assertTrue("Target should be protected by phalanx wall", result.isPhalanxProtected)
+        assertEquals(HitSector.FRONTAL, result.hitSector)
+        assertEquals(DirectionalCombatEvent.PHALANX_INTERLOCKED_DEFENSE, result.directionalEvent)
+        // Full defense applies without flanking bypass: 50 - 40 / 2 = 30
+        assertEquals(30, result.damage)
+    }
+
+    @Test
+    fun testTurningInertiaPreventsInstant180Spin() {
+        // Heavy fighter with 90° turning limit per action
+        val heavyFighter = Fighter(
+            name = "Heavy Ironclad",
+            x = 3,
+            y = 3,
+            facing = FacingDirection.NORTH,
+            turnSpeedDegrees = 90.0
+        )
+
+        // Target directly behind to the SOUTH (180° rotation requested)
+        heavyFighter.turnTowards(3, 5)
+
+        // Should NOT face SOUTH immediately; should turn 90° towards EAST or WEST
+        assertTrue("Heavy fighter should not turn 180° instantly", heavyFighter.facing != FacingDirection.SOUTH)
+        assertTrue(
+            "Heavy fighter should rotate 90° to EAST or WEST",
+            heavyFighter.facing == FacingDirection.EAST || heavyFighter.facing == FacingDirection.WEST
+        )
+
+        // A second turn allows completing the turn to SOUTH
+        heavyFighter.turnTowards(3, 5)
+        assertEquals(FacingDirection.SOUTH, heavyFighter.facing)
+    }
+
+    @Test
+    fun testMovementUpdatesFacingToDirectionOfTravel() {
+        val fighter = Fighter(name = "Scout", x = 2, y = 4, facing = FacingDirection.NORTH)
+        val engine = BattleEngine()
+
+        // Move North: (2, 4) -> (2, 3)
+        val targetNorth = Fighter(name = "TargetN", x = 2, y = 1)
+        engine.moveTowards(fighter, targetNorth)
+        assertEquals(2, fighter.x)
+        assertEquals(3, fighter.y)
+        assertEquals(FacingDirection.NORTH, fighter.facing)
+
+        // Move East: (2, 3) -> (3, 3)
+        val targetEast = Fighter(name = "TargetE", x = 5, y = 3)
+        engine.moveTowards(fighter, targetEast)
+        assertEquals(3, fighter.x)
+        assertEquals(3, fighter.y)
+        assertEquals(FacingDirection.EAST, fighter.facing)
+
+        // Move South: (3, 3) -> (3, 4)
+        val targetSouth = Fighter(name = "TargetS", x = 3, y = 6)
+        engine.moveTowards(fighter, targetSouth)
+        assertEquals(3, fighter.x)
+        assertEquals(4, fighter.y)
+        assertEquals(FacingDirection.SOUTH, fighter.facing)
+    }
+
+    @Test
+    fun testTauntAsPositionalAnchor() {
+        val engine = BattleEngine()
+        val tank = Fighter(
+            id = "tank-1",
+            name = "Paladin Tank",
+            fighterClass = FighterClass.TANK,
+            x = 3,
+            y = 3,
+            facing = FacingDirection.NORTH,
+            isPlayer = true
+        )
+        val enemy = Fighter(
+            id = "enemy-1",
+            name = "Enemy Assassin",
+            x = 3,
+            y = 4,
+            facing = FacingDirection.SOUTH,
+            isPlayer = false
+        )
+
+        val battleState = BattleState(
+            round = 1,
+            turn = 0,
+            playerFighters = listOf(tank),
+            opponentFighters = listOf(enemy),
+            isBattleActive = true
+        )
+
+        val nextState = engine.processTurn(battleState)
+        val enemyAfter = nextState.opponentFighters.first()
+
+        // Tank should taunt adjacent enemy, forcing enemy to target and face tank
+        assertEquals("Enemy should be taunted by tank", tank.id, enemyAfter.tauntedById)
+        assertEquals("Enemy should face tank to the North", FacingDirection.NORTH, enemyAfter.facing)
     }
 }

@@ -223,7 +223,7 @@ class BattleEngine(
                 if (currentActor.fighterClass == FighterClass.TANK || ability.ccType == CCType.TAUNT) {
                     aliveEnemies.filter { distance(currentActor, it) <= 2 }.forEach { enemy ->
                         enemy.tauntedById = currentActor.id
-                        enemy.turnTowards(currentActor.x, currentActor.y)
+                        enemy.facing = FacingDirection.fromDelta(currentActor.x - enemy.x, currentActor.y - enemy.y)
                         newTurnLogs.add("📢 [Taunt Anchor] ${currentActor.name} taunts ${enemy.name}, forcing them to face the frontline!")
                     }
                 }
@@ -358,6 +358,11 @@ class BattleEngine(
                     currentActor.engagedTargetId = target.id
                     if (target.engagedTargetId == null) {
                         target.engagedTargetId = currentActor.id
+                    }
+                    if (currentActor.fighterClass == FighterClass.TANK) {
+                        target.tauntedById = currentActor.id
+                        target.facing = FacingDirection.fromDelta(currentActor.x - target.x, currentActor.y - target.y)
+                        newTurnLogs.add("📢 [Taunt Anchor] ${currentActor.name} taunts ${target.name}, locking their facing forward!")
                     }
                 }
 
@@ -603,7 +608,7 @@ class BattleEngine(
         return abs(f1.x - f2.x) + abs(f1.y - f2.y)
     }
 
-    private fun moveTowards(actor: Fighter, target: Fighter, allUnits: List<Fighter>) {
+    fun moveTowards(actor: Fighter, target: Fighter, allUnits: List<Fighter> = emptyList()) {
         val oldX = actor.x
         val oldY = actor.y
 
