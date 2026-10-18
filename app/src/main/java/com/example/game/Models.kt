@@ -453,7 +453,7 @@ data class Fighter(
         posture = maxOf(0.0f, posture - amount)
         if (posture <= 0.0f && !isGuardBroken) {
             isGuardBroken = true
-            guardBreakDuration = 1.0f
+            guardBreakDuration = 2.0f
         }
     }
 

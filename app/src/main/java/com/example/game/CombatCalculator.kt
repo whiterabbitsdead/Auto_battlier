@@ -63,7 +63,10 @@ object CombatCalculator {
      */
     fun isProtectedByPhalanx(attacker: Fighter, target: Fighter, allies: List<Fighter>): Boolean {
         if (allies.isEmpty()) return false
-        val attackVecX = attacker.x - target.x
+        val attackDx = attacker.x - target.x
+        val attackDy = attacker.y - target.y
+        val attackLateral = attackDx * target.facing.dy - attackDy * target.facing.dx
+        if (attackLateral == 0) return false
         val phalanxAllies = allies.filter { ally ->
             ally.isAlive && ally.id != target.id &&
             chebyshevDistance(ally, target) == 1 &&
@@ -71,8 +74,10 @@ object CombatCalculator {
             (ally.shieldType != ShieldType.NONE || ally.fighterClass == FighterClass.TANK || ally.physDefense >= 15)
         }
         return phalanxAllies.any { ally ->
-            val allyVecX = ally.x - target.x
-            (attackVecX > 0 && allyVecX > 0) || (attackVecX < 0 && allyVecX < 0)
+            val allyDx = ally.x - target.x
+            val allyDy = ally.y - target.y
+            val allyLateral = allyDx * target.facing.dy - allyDy * target.facing.dx
+            (attackLateral > 0 && allyLateral > 0) || (attackLateral < 0 && allyLateral < 0)
         }
     }
 
@@ -154,17 +159,17 @@ object CombatCalculator {
         var forceCrit = false
 
         when {
-            target.isGuardBroken -> {
-                // Guard broken: posture depleted, takes 50% extra armor pen and cannot block
-                effectiveDef = totalDef * 0.5f
-                directionalEvent = DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
-            }
             hitSector == HitSector.REAR -> {
                 // Rear Arc (Backstab): 80% armor penetration, guaranteed critical hit with 2.0x multiplier
                 effectiveDef = totalDef * 0.2f
                 forceCrit = true
                 critMultiplier = 2.0
                 directionalEvent = DirectionalCombatEvent.CRITICAL_BACKSTAB
+            }
+            target.isGuardBroken -> {
+                // Guard broken: posture depleted, takes 50% extra armor pen and cannot block
+                effectiveDef = totalDef * 0.5f
+                directionalEvent = DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
             }
             hitSector == HitSector.FLANKING -> {
                 // Flanking Arc: 40% armor bypass, +20% elevated crit chance
@@ -207,7 +212,7 @@ object CombatCalculator {
 
         // Rear attacks completely bypass directional and barrier shields
         val shieldCanDeflect = hitSector != HitSector.REAR && !target.isGuardBroken &&
-                (phalanxCovered || target.canBlockDirection(incidentAngle) || target.shieldType != ShieldType.NONE || target.shield > 0.0f)
+                (phalanxCovered || target.canBlockDirection(incidentAngle))
 
         if (shieldCanDeflect && target.shield > 0.0f) {
             val shieldInt = target.shield.toInt()

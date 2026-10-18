@@ -210,8 +210,8 @@ class CombatEngine(
         val hitSector = HitSector.fromIncidentAngle(attackAngle)
 
         val effectiveDefense = when {
-            target.isGuardBroken -> target.defense * 0.5f
             hitSector == HitSector.REAR -> target.defense * 0.2f
+            target.isGuardBroken -> target.defense * 0.5f
             hitSector == HitSector.FLANKING -> target.defense * 0.6f
             else -> target.defense.toFloat()
         }
@@ -249,13 +249,17 @@ class CombatEngine(
         val clonedA = teamA.map {
             it.copy(
                 team = Team.TEAM_A,
-                facing = if (it.facing == FacingDirection.SOUTH) FacingDirection.NORTH else it.facing
+                facing = if (it.facing == FacingDirection.SOUTH) FacingDirection.NORTH else it.facing,
+                engagedTargetId = null,
+                tauntedById = null
             )
         }
         val clonedB = teamB.map {
             it.copy(
                 team = Team.TEAM_B,
-                facing = if (it.facing == FacingDirection.NORTH) FacingDirection.SOUTH else it.facing
+                facing = if (it.facing == FacingDirection.NORTH) FacingDirection.SOUTH else it.facing,
+                engagedTargetId = null,
+                tauntedById = null
             )
         }
 
@@ -318,6 +322,7 @@ class CombatEngine(
         val useSpecial = attacker.isAbilityReady && ability != null
         val actualDamageDealt: Int
         val logMsg: String
+        var normalDirEvent: DirectionalCombatEvent = DirectionalCombatEvent.FRONTAL_STRIKE
 
         if (useSpecial) {
             // Trigger special ability
@@ -351,8 +356,8 @@ class CombatEngine(
             val attackAngle = 180.0 - attacker.facing.angleDifference(target.facing)
             val hitSector = HitSector.fromIncidentAngle(attackAngle)
             val dirEvent = when {
-                target.isGuardBroken -> DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
                 hitSector == HitSector.REAR -> DirectionalCombatEvent.CRITICAL_BACKSTAB
+                target.isGuardBroken -> DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
                 hitSector == HitSector.FLANKING -> DirectionalCombatEvent.GLANCING_FLANK
                 target.shieldType != ShieldType.NONE -> {
                     target.depletePosture(15.0f)
@@ -360,6 +365,7 @@ class CombatEngine(
                 }
                 else -> DirectionalCombatEvent.FRONTAL_STRIKE
             }
+            normalDirEvent = dirEvent
 
             val sectorTag = when (dirEvent) {
                 DirectionalCombatEvent.CRITICAL_BACKSTAB -> " [🗡️ BACKSTAB]"
@@ -380,11 +386,15 @@ class CombatEngine(
 
         val attackAngle = 180.0 - attacker.facing.angleDifference(target.facing)
         val finalSector = HitSector.fromIncidentAngle(attackAngle)
-        val finalEvent = when {
-            target.isGuardBroken -> DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
-            finalSector == HitSector.REAR -> DirectionalCombatEvent.CRITICAL_BACKSTAB
-            finalSector == HitSector.FLANKING -> DirectionalCombatEvent.GLANCING_FLANK
-            else -> DirectionalCombatEvent.FRONTAL_STRIKE
+        val finalEvent = if (useSpecial) {
+            when {
+                finalSector == HitSector.REAR -> DirectionalCombatEvent.CRITICAL_BACKSTAB
+                target.isGuardBroken -> DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
+                finalSector == HitSector.FLANKING -> DirectionalCombatEvent.GLANCING_FLANK
+                else -> DirectionalCombatEvent.FRONTAL_STRIKE
+            }
+        } else {
+            normalDirEvent
         }
 
         return CombatAction(
@@ -543,7 +553,7 @@ class CombatEngine(
                 break
             }
 
-            val target = selectTarget(aliveOpponents, targetingStrategy) ?: continue
+            val target = selectTarget(currentActor, aliveOpponents, targetingStrategy) ?: continue
             turnCounter++
 
             // Process turn action for actor and target
@@ -627,10 +637,26 @@ class CombatEngine(
     }
 
     private fun selectTarget(
+        actor: Combatant,
         aliveOpponents: List<Combatant>,
         strategy: TargetingStrategy
     ): Combatant? {
         if (aliveOpponents.isEmpty()) return null
+
+        // Priority 1: Taunted by a living opponent
+        if (actor.tauntedById != null) {
+            val taunter = aliveOpponents.find { it.id == actor.tauntedById }
+            if (taunter != null) return taunter
+            actor.tauntedById = null
+        }
+
+        // Priority 2: Engaged target
+        if (actor.engagedTargetId != null) {
+            val engaged = aliveOpponents.find { it.id == actor.engagedTargetId }
+            if (engaged != null) return engaged
+            actor.engagedTargetId = null
+        }
+
         return when (strategy) {
             TargetingStrategy.FIRST_ALIVE -> aliveOpponents.first()
             TargetingStrategy.LOWEST_HP -> aliveOpponents.minByOrNull { it.hp }

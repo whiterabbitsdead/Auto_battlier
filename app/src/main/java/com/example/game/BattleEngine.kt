@@ -127,12 +127,26 @@ class BattleEngine(
             if (fighter.isAlive && fighter.startY >= 0) {
                 fighter.reduceCooldown(1)
                 fighter.tickTurnStatus()
+                // Clear taunt or engagement if target died or is no longer on battlefield
+                if (fighter.tauntedById != null && updatedOpponentFighters.none { it.isAlive && it.id == fighter.tauntedById }) {
+                    fighter.tauntedById = null
+                }
+                if (fighter.engagedTargetId != null && updatedOpponentFighters.none { it.isAlive && it.id == fighter.engagedTargetId }) {
+                    fighter.engagedTargetId = null
+                }
             }
         }
         for (fighter in updatedOpponentFighters) {
             if (fighter.isAlive) {
                 fighter.reduceCooldown(1)
                 fighter.tickTurnStatus()
+                // Clear taunt or engagement if target died or is no longer on battlefield
+                if (fighter.tauntedById != null && updatedPlayerFighters.none { it.isAlive && it.startY >= 0 && it.id == fighter.tauntedById }) {
+                    fighter.tauntedById = null
+                }
+                if (fighter.engagedTargetId != null && updatedPlayerFighters.none { it.isAlive && it.startY >= 0 && it.id == fighter.engagedTargetId }) {
+                    fighter.engagedTargetId = null
+                }
             }
         }
 
@@ -197,9 +211,17 @@ class BattleEngine(
             if (aliveEnemies.isEmpty()) break
 
             // 1. Taunt enforcement: if taunted, must target the taunter if still alive
-            val taunter = currentActor.tauntedById?.let { tId -> aliveEnemies.find { it.id == tId } }
+            val taunter = currentActor.tauntedById?.let { tId ->
+                val found = aliveEnemies.find { it.id == tId }
+                if (found == null) currentActor.tauntedById = null
+                found
+            }
             // 2. Engagement locking: if already engaged in melee with an enemy who is alive and adjacent, commit to them
-            val engagedTarget = currentActor.engagedTargetId?.let { eId -> aliveEnemies.find { it.id == eId && distance(currentActor, it) <= 1 } }
+            val engagedTarget = currentActor.engagedTargetId?.let { eId ->
+                val found = aliveEnemies.find { it.id == eId && distance(currentActor, it) <= 1 }
+                if (found == null) currentActor.engagedTargetId = null
+                found
+            }
             // 3. Assassin/skirmisher targeting: assassins prioritize low HP or backline targets
             val target = taunter ?: engagedTarget ?: if (currentActor.fighterClass == FighterClass.ASSASSIN || currentActor.fighterClass == FighterClass.CONVICT) {
                 aliveEnemies.minByOrNull { it.health.toFloat() / maxOf(1, it.maxHp) } ?: aliveEnemies.minByOrNull { distance(currentActor, it) } ?: continue
@@ -566,11 +588,15 @@ class BattleEngine(
         val playerCopy = playerFighters.map { f ->
             val copy = f.copy()
             if (copy.facing == FacingDirection.NORTH) copy.facing = FacingDirection.NORTH
+            copy.engagedTargetId = null
+            copy.tauntedById = null
             copy
         }
         val opponentCopy = opponentFighters.map { f ->
             val copy = f.copy()
             if (copy.facing == FacingDirection.NORTH) copy.facing = FacingDirection.SOUTH
+            copy.engagedTargetId = null
+            copy.tauntedById = null
             copy
         }
         return BattleState(
@@ -621,14 +647,33 @@ class BattleEngine(
         var destY = target.y
 
         if (isFlanker) {
-            // Rear tile: opposite to target's facing vector
-            val rearX = (target.x - target.facing.dx).coerceIn(0, 7)
-            val rearY = (target.y - target.facing.dy).coerceIn(0, 7)
-            val rearOccupied = allUnits.any { it.isAlive && it.id != actor.id && it.x == rearX && it.y == rearY }
+            // Rear candidate tiles: opposite to target's facing vector
+            // For diagonal facing (e.g. NORTH_EAST dx=1, dy=-1), rear is Manhattan distance 2 (dx=-1, dy=1).
+            // For melee actors (attackRange <= 1), standing at Manhattan dist 2 cannot attack target.
+            // Therefore, offer the cardinal rear steps as well so melee flankers remain adjacent.
+            val rearCandidates = mutableListOf<Pair<Int, Int>>()
+            val fullRearX = (target.x - target.facing.dx).coerceIn(0, 7)
+            val fullRearY = (target.y - target.facing.dy).coerceIn(0, 7)
+            if (actor.attackRange > 1 || (abs(target.facing.dx) + abs(target.facing.dy) <= 1)) {
+                rearCandidates.add(fullRearX to fullRearY)
+            } else {
+                // Diagonal facing for melee actor: try cardinal rear components first so distance to target is 1
+                if (target.facing.dx != 0) {
+                    rearCandidates.add((target.x - target.facing.dx).coerceIn(0, 7) to target.y)
+                }
+                if (target.facing.dy != 0) {
+                    rearCandidates.add(target.x to (target.y - target.facing.dy).coerceIn(0, 7))
+                }
+                rearCandidates.add(fullRearX to fullRearY)
+            }
 
-            if (!rearOccupied && (rearX != target.x || rearY != target.y)) {
-                destX = rearX
-                destY = rearY
+            val bestRear = rearCandidates.firstOrNull { (rx, ry) ->
+                (rx != target.x || ry != target.y) && allUnits.none { it.isAlive && it.id != actor.id && it.x == rx && it.y == ry }
+            }
+
+            if (bestRear != null) {
+                destX = bestRear.first
+                destY = bestRear.second
             } else {
                 // Flank tile (perpendicular)
                 val flankX = (target.x + target.facing.dy).coerceIn(0, 7)
