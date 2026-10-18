@@ -24,7 +24,96 @@ enum class CCType(val displayName: String) {
     NONE("None"),
     STUN("Stun"),
     ROOT("Root"),
-    DISARM("Disarm")
+    DISARM("Disarm"),
+    TAUNT("Taunt")
+}
+
+enum class FacingDirection(val dx: Int, val dy: Int, val degrees: Double) {
+    NORTH(0, -1, 0.0),
+    NORTH_EAST(1, -1, 45.0),
+    EAST(1, 0, 90.0),
+    SOUTH_EAST(1, 1, 135.0),
+    SOUTH(0, 1, 180.0),
+    SOUTH_WEST(-1, 1, 225.0),
+    WEST(-1, 0, 270.0),
+    NORTH_WEST(-1, -1, 315.0);
+
+    fun angleDifference(other: FacingDirection): Double {
+        val diff = Math.abs(this.degrees - other.degrees) % 360.0
+        return if (diff > 180.0) 360.0 - diff else diff
+    }
+
+    fun rotateTowards(targetDirection: FacingDirection, maxTurnDegrees: Double): FacingDirection {
+        val directDiff = angleDifference(targetDirection)
+        if (directDiff <= maxTurnDegrees) {
+            return targetDirection
+        }
+        var cwDiff = (targetDirection.degrees - this.degrees) % 360.0
+        if (cwDiff < 0) cwDiff += 360.0
+        val isClockwise = cwDiff <= 180.0
+
+        val step = (maxTurnDegrees / 45.0).toInt().coerceAtLeast(1)
+        val dirEntries = entries
+        val currentIndex = dirEntries.indexOf(this)
+        val newIndex = if (isClockwise) {
+            (currentIndex + step) % dirEntries.size
+        } else {
+            (currentIndex - step + dirEntries.size) % dirEntries.size
+        }
+        return dirEntries[newIndex]
+    }
+
+    companion object {
+        fun fromDelta(dx: Int, dy: Int): FacingDirection {
+            if (dx == 0 && dy == 0) return NORTH
+            val angleRad = Math.atan2(dx.toDouble(), -dy.toDouble())
+            var angleDeg = Math.toDegrees(angleRad)
+            if (angleDeg < 0) angleDeg += 360.0
+            val snappedDeg = ((Math.round(angleDeg / 45.0) * 45) % 360).toDouble()
+            return entries.firstOrNull { Math.abs(it.degrees - snappedDeg) < 1.0 } ?: NORTH
+        }
+    }
+}
+
+enum class HitSector(val displayName: String) {
+    FRONTAL("Frontal Arc (120°)"),
+    FLANKING("Flanking Arc (60°)"),
+    REAR("Rear Arc (120° Backstab)");
+
+    companion object {
+        fun fromIncidentAngle(angleDegrees: Double): HitSector {
+            return when {
+                angleDegrees <= 60.0 -> FRONTAL
+                angleDegrees <= 120.0 -> FLANKING
+                else -> REAR
+            }
+        }
+    }
+}
+
+enum class ShieldType(val displayName: String, val arcDegrees: Double) {
+    NONE("No Shield", 0.0),
+    BUCKLER("Buckler (90° Arc)", 90.0),
+    STANDARD("Standard Shield (120° Arc)", 120.0),
+    TOWER("Tower Shield (180° Arc)", 180.0);
+
+    fun canDeflect(angleDegrees: Double): Boolean {
+        if (this == NONE) return false
+        return angleDegrees <= (arcDegrees / 2.0)
+    }
+}
+
+enum class DirectionalCombatEvent(val displayName: String) {
+    FRONTAL_BLOCKED("Frontal Strike Blocked"),
+    GLANCING_FLANK("Glancing Flank Strike"),
+    CRITICAL_BACKSTAB("Critical Backstab"),
+    SHIELD_ARC_DEFLECTED("Shield Arc Deflected"),
+    FRONTAL_STRIKE("Frontal Direct Strike"),
+    GUARD_BROKEN_EXPOSURE("Guard Broken Vulnerability"),
+    PHALANX_INTERLOCKED_DEFENSE("Phalanx Interlocked Defense"),
+    POSTURE_STAGGERED("Target Posture Staggered"),
+    DEFLECTION_COUNTER("Active Deflection Counter"),
+    DEATHBLOW_EXECUTION("Deathblow Critical Execution")
 }
 
 data class StatusEffect(
@@ -309,7 +398,23 @@ data class Fighter(
     var rootDuration: Float = 0.0f,
     var disarmDuration: Float = 0.0f,
     var attacksSinceSkill: Int = 0,
-    val enhancements: List<AbilityEnhancement> = emptyList()
+    val enhancements: List<AbilityEnhancement> = emptyList(),
+    var facing: FacingDirection = if (isPlayer) FacingDirection.NORTH else FacingDirection.SOUTH,
+    var rotationInertia: Float = if (fighterClass == FighterClass.TANK || fighterClass == FighterClass.KNUCKLE_POWER) 0.5f else 1.0f,
+    var turnSpeedDegrees: Double = if (fighterClass == FighterClass.TANK || fighterClass == FighterClass.KNUCKLE_POWER) 60.0 else 120.0,
+    var shieldType: ShieldType = if (fighterClass == FighterClass.TANK) ShieldType.TOWER else if (physDefense >= 15) ShieldType.STANDARD else ShieldType.NONE,
+    var posture: Float = 100.0f,
+    var maxPosture: Float = 100.0f,
+    var poise: Float = 100.0f,
+    var maxPoise: Float = poise,
+    var isGuardBroken: Boolean = false,
+    var guardBreakDuration: Float = 0.0f,
+    var isStaggered: Boolean = false,
+    var staggerDuration: Float = 0.0f,
+    var deflectionChance: Float = if (fighterClass == FighterClass.TANK) 0.20f else if (physDefense >= 15) 0.12f else 0.05f,
+    var tookDamageThisTurn: Boolean = false,
+    var engagedTargetId: String? = null,
+    var tauntedById: String? = null
 ) {
     val isAlive: Boolean get() = hp > 0 || health > 0
     val isStunned: Boolean get() = stunDuration > 0.0f
@@ -341,12 +446,60 @@ data class Fighter(
         attacksSinceSkill = 0
     }
 
+    fun turnTowards(targetX: Int, targetY: Int): FacingDirection {
+        val desired = FacingDirection.fromDelta(targetX - x, targetY - y)
+        facing = facing.rotateTowards(desired, turnSpeedDegrees)
+        return facing
+    }
+
+    fun canBlockDirection(incidentAngle: Double): Boolean {
+        if (isGuardBroken) return false
+        val effectiveShield = if (shieldType != ShieldType.NONE) shieldType else if (shield > 0.0f) ShieldType.STANDARD else ShieldType.NONE
+        return effectiveShield.canDeflect(incidentAngle)
+    }
+
+    fun depletePosture(amount: Float, ignorePoise: Boolean = false) {
+        val poiseFactor = if (ignorePoise) 1.0f else maxOf(0.5f, poise / 100.0f)
+        val loss = amount / poiseFactor
+        posture = maxOf(0.0f, posture - loss)
+        if (posture <= 0.0f && !isGuardBroken) {
+            isGuardBroken = true
+            isStaggered = false
+            guardBreakDuration = 1.0f
+        } else if (posture <= maxPosture * 0.35f && !isGuardBroken) {
+            isStaggered = true
+            staggerDuration = 1.0f
+        }
+    }
+
     fun tickTurnStatus() {
         if (stunDuration > 0.0f) stunDuration = maxOf(0.0f, stunDuration - 1.0f)
         if (rootDuration > 0.0f) rootDuration = maxOf(0.0f, rootDuration - 1.0f)
         if (disarmDuration > 0.0f) disarmDuration = maxOf(0.0f, disarmDuration - 1.0f)
+        if (staggerDuration > 0.0f) {
+            staggerDuration = maxOf(0.0f, staggerDuration - 1.0f)
+            if (staggerDuration <= 0.0f) {
+                isStaggered = false
+            }
+        }
+        if (guardBreakDuration > 0.0f) {
+            guardBreakDuration = maxOf(0.0f, guardBreakDuration - 1.0f)
+            if (guardBreakDuration <= 0.0f) {
+                isGuardBroken = false
+                isStaggered = false
+                posture = maxPosture * 0.5f
+            }
+        } else {
+            val recoveryRate = if (!tookDamageThisTurn) 25.0f else 12.0f
+            val staminaFactor = if (stamina < 5.0f) 0.5f else 1.0f
+            posture = minOf(maxPosture, posture + recoveryRate * staminaFactor)
+            if (posture > maxPosture * 0.35f && staggerDuration <= 0.0f) {
+                isStaggered = false
+            }
+        }
         // Stamina passive recovery
         stamina = minOf(maxStamina, stamina + 3.0f)
+        tookDamageThisTurn = false
     }
 
     init {

@@ -48,7 +48,7 @@ class CombatEngine(
 
     /**
      * Represents a combatant participating in battle.
-     * Core attributes: [hp], [attack], [speed], [defense], [starLevel], and optional [specialAbility].
+     * Core attributes: [hp], [attack], [speed], [defense], [starLevel], directional facing, and optional [specialAbility].
      */
     data class Combatant(
         val id: String = UUID.randomUUID().toString(),
@@ -64,11 +64,23 @@ class CombatEngine(
         var mana: Int = 0,
         val maxMana: Int = 100,
         val specialAbility: SpecialAbility? = null,
-        var abilityCooldown: Int = 0
+        var abilityCooldown: Int = 0,
+        var facing: FacingDirection = if (team == Team.TEAM_B) FacingDirection.SOUTH else FacingDirection.NORTH,
+        val shieldType: ShieldType = ShieldType.NONE,
+        var posture: Float = 100.0f,
+        val maxPosture: Float = 100.0f,
+        var poise: Float = 100.0f,
+        var isGuardBroken: Boolean = false,
+        var isStaggered: Boolean = false,
+        var deflectionChance: Float = 0.0f,
+        var critChance: Double = 0.0,
+        var turnSpeedDegrees: Double = 90.0,
+        var engagedTargetId: String? = null,
+        var tauntedById: String? = null
     ) {
         val isAlive: Boolean get() = hp > 0
         val isAbilityReady: Boolean
-            get() = isAlive && specialAbility != null && (abilityCooldown <= 0 || mana >= (specialAbility?.manaCost ?: 50))
+            get() = isAlive && specialAbility != null && (abilityCooldown <= 0 || mana >= specialAbility.manaCost)
 
         /**
          * Applies incoming damage and returns the actual damage dealt.
@@ -85,6 +97,22 @@ class CombatEngine(
             val effectiveHeal = minOf(maxHp - hp, amount)
             hp += effectiveHeal
             return effectiveHeal
+        }
+
+        fun depletePosture(amount: Float, ignorePoise: Boolean = false) {
+            val poiseFactor = if (ignorePoise) 1.0f else maxOf(0.5f, poise / 100.0f)
+            val loss = amount / poiseFactor
+            posture = maxOf(0.0f, posture - loss)
+            if (posture <= 0.0f && !isGuardBroken) {
+                isGuardBroken = true
+                isStaggered = false
+            } else if (posture <= maxPosture * 0.35f && !isGuardBroken) {
+                isStaggered = true
+            }
+        }
+
+        fun turnTowards(desired: FacingDirection) {
+            facing = facing.rotateTowards(desired, turnSpeedDegrees)
         }
 
         fun copyCombatant(): Combatant = copy()
@@ -108,7 +136,9 @@ class CombatEngine(
         val isFatal: Boolean,
         val logMessage: String,
         val isSpecialAbility: Boolean = false,
-        val abilityName: String? = null
+        val abilityName: String? = null,
+        val hitSector: HitSector = HitSector.FRONTAL,
+        val combatEvent: DirectionalCombatEvent? = null
     )
 
     /**
@@ -168,7 +198,7 @@ class CombatEngine(
 
     /**
      * Calculates damage dealt from [attacker] to [target] based on Attack and Defense attributes,
-     * accounting for star-level upgrades (upgraded heroes deal more damage).
+     * accounting for star-level upgrades and directional hit angle (rear backstab vs flanking vs frontal).
      */
     fun calculateDamage(attacker: Combatant, target: Combatant): Int {
         var rawAttack = attacker.attack.toFloat()
@@ -180,8 +210,28 @@ class CombatEngine(
             rawAttack *= 1.6f
         }
 
-        val defenseMitigation = (target.defense / 2.0f).coerceAtLeast(0.0f)
-        return (rawAttack - defenseMitigation).toInt().coerceAtLeast(1)
+        // Directional mitigation
+        val attackAngle = if (attacker.team == target.team && attacker.facing == target.facing) {
+            0.0 // Default 1v1 test between un-teamed units faces each other frontally
+        } else {
+            180.0 - attacker.facing.angleDifference(target.facing)
+        }
+        val hitSector = HitSector.fromIncidentAngle(attackAngle)
+
+        val effectiveDefense = when {
+            target.isGuardBroken -> target.defense * 0.5f
+            target.isStaggered -> target.defense * 0.7f
+            hitSector == HitSector.REAR -> target.defense * 0.2f
+            hitSector == HitSector.FLANKING -> target.defense * 0.6f
+            else -> target.defense.toFloat()
+        }
+
+        val defenseMitigation = (effectiveDefense / 2.0f).coerceAtLeast(0.0f)
+        var damage = (rawAttack - defenseMitigation).toInt().coerceAtLeast(1)
+        if (hitSector == HitSector.REAR) {
+            damage = (damage * 2.0).toInt()
+        }
+        return damage
     }
 
     /**
@@ -206,8 +256,18 @@ class CombatEngine(
      */
     fun initCombat(teamA: List<Combatant>, teamB: List<Combatant>): CombatState {
         combatLog.startFight()
-        val clonedA = teamA.map { it.copy(team = Team.TEAM_A) }
-        val clonedB = teamB.map { it.copy(team = Team.TEAM_B) }
+        val clonedA = teamA.map {
+            it.copy(
+                team = Team.TEAM_A,
+                facing = if (it.facing == FacingDirection.SOUTH) FacingDirection.NORTH else it.facing
+            )
+        }
+        val clonedB = teamB.map {
+            it.copy(
+                team = Team.TEAM_B,
+                facing = if (it.facing == FacingDirection.NORTH) FacingDirection.SOUTH else it.facing
+            )
+        }
 
         val initialOutcome = when {
             clonedA.none { it.isAlive } && clonedB.none { it.isAlive } -> BattleOutcome.DRAW
@@ -268,6 +328,7 @@ class CombatEngine(
         val useSpecial = attacker.isAbilityReady && ability != null
         val actualDamageDealt: Int
         val logMsg: String
+        var combatEvent = DirectionalCombatEvent.FRONTAL_STRIKE
 
         if (useSpecial) {
             // Trigger special ability
@@ -293,18 +354,63 @@ class CombatEngine(
             attacker.mana = minOf(attacker.maxMana, attacker.mana + 25)
             if (attacker.abilityCooldown > 0) attacker.abilityCooldown--
 
-            val damage = calculateDamage(attacker, target)
+            val attackAngle = 180.0 - attacker.facing.angleDifference(target.facing)
+            val hitSector = HitSector.fromIncidentAngle(attackAngle)
+            val isDeflected = hitSector == HitSector.FRONTAL && !target.isGuardBroken && !target.isStaggered && (random.nextDouble() < target.deflectionChance)
+
+            var damage = calculateDamage(attacker, target)
+            combatEvent = when {
+                isDeflected -> {
+                    damage = maxOf(1, (damage * 0.25f).toInt())
+                    attacker.depletePosture(20.0f)
+                    DirectionalCombatEvent.DEFLECTION_COUNTER
+                }
+                target.isGuardBroken -> {
+                    if (random.nextDouble() < attacker.critChance) {
+                        damage = (damage * 2.5).toInt() + (target.maxHp * 0.1f).toInt()
+                        DirectionalCombatEvent.DEATHBLOW_EXECUTION
+                    } else {
+                        DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
+                    }
+                }
+                target.isStaggered -> DirectionalCombatEvent.POSTURE_STAGGERED
+                hitSector == HitSector.REAR -> DirectionalCombatEvent.CRITICAL_BACKSTAB
+                hitSector == HitSector.FLANKING -> DirectionalCombatEvent.GLANCING_FLANK
+                target.shieldType != ShieldType.NONE -> {
+                    target.depletePosture(15.0f)
+                    DirectionalCombatEvent.FRONTAL_BLOCKED
+                }
+                else -> {
+                    target.depletePosture(10.0f)
+                    DirectionalCombatEvent.FRONTAL_STRIKE
+                }
+            }
+
             actualDamageDealt = target.takeDamage(damage)
             val isFatal = !target.isAlive
 
+            val sectorTag = when (combatEvent) {
+                DirectionalCombatEvent.CRITICAL_BACKSTAB -> " [🗡️ BACKSTAB]"
+                DirectionalCombatEvent.GLANCING_FLANK -> " [⚔️ FLANK]"
+                DirectionalCombatEvent.FRONTAL_BLOCKED -> " [🛡️ BLOCKED]"
+                DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE -> " [⚠️ GUARD BROKEN]"
+                DirectionalCombatEvent.POSTURE_STAGGERED -> " [⚡ STAGGERED]"
+                DirectionalCombatEvent.DEFLECTION_COUNTER -> " [⚔️ DEFLECTED COUNTER]"
+                DirectionalCombatEvent.DEATHBLOW_EXECUTION -> " [⚡ DEATHBLOW EXECUTION]"
+                else -> ""
+            }
+
             logMsg = if (isFatal) {
-                "💥 [R$round T$turnInRound] ${attacker.name} ⭐${attacker.starLevel} (Spd ${attacker.speed}, Atk ${attacker.attack}) strikes ${target.name} for $actualDamageDealt DMG! 💀 ${target.name} has been defeated!"
+                "💥 [R$round T$turnInRound] ${attacker.name} ⭐${attacker.starLevel} (Spd ${attacker.speed}, Atk ${attacker.attack}) strikes ${target.name} for $actualDamageDealt DMG!$sectorTag 💀 ${target.name} has been defeated!"
             } else {
-                "⚔️ [R$round T$turnInRound] ${attacker.name} ⭐${attacker.starLevel} (Spd ${attacker.speed}, Atk ${attacker.attack}) attacks ${target.name} for $actualDamageDealt DMG (${target.hp}/${target.maxHp} HP remaining)."
+                "⚔️ [R$round T$turnInRound] ${attacker.name} ⭐${attacker.starLevel} (Spd ${attacker.speed}, Atk ${attacker.attack}) attacks ${target.name} for $actualDamageDealt DMG$sectorTag (${target.hp}/${target.maxHp} HP remaining)."
             }
         }
 
         log.appendEvent(logMsg)
+
+        val attackAngle = 180.0 - attacker.facing.angleDifference(target.facing)
+        val finalSector = HitSector.fromIncidentAngle(attackAngle)
 
         return CombatAction(
             round = round,
@@ -321,7 +427,9 @@ class CombatEngine(
             isFatal = !target.isAlive,
             logMessage = logMsg,
             isSpecialAbility = useSpecial,
-            abilityName = ability?.name
+            abilityName = ability?.name,
+            hitSector = finalSector,
+            combatEvent = combatEvent
         )
     }
 
@@ -623,7 +731,16 @@ class CombatEngine(
                 mana = mana,
                 maxMana = maxMana,
                 specialAbility = effectiveAbility,
-                abilityCooldown = abilityCooldown
+                abilityCooldown = abilityCooldown,
+                facing = facing,
+                shieldType = shieldType,
+                posture = posture,
+                maxPosture = maxPosture,
+                poise = poise,
+                isGuardBroken = isGuardBroken,
+                isStaggered = isStaggered,
+                deflectionChance = deflectionChance,
+                turnSpeedDegrees = turnSpeedDegrees
             )
         }
 
