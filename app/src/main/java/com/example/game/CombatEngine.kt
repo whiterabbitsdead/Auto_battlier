@@ -69,7 +69,10 @@ class CombatEngine(
         val shieldType: ShieldType = ShieldType.NONE,
         var posture: Float = 100.0f,
         val maxPosture: Float = 100.0f,
+        var poise: Float = 100.0f,
         var isGuardBroken: Boolean = false,
+        var isStaggered: Boolean = false,
+        var deflectionChance: Float = 0.10f,
         var turnSpeedDegrees: Double = 90.0,
         var engagedTargetId: String? = null,
         var tauntedById: String? = null
@@ -95,10 +98,15 @@ class CombatEngine(
             return effectiveHeal
         }
 
-        fun depletePosture(amount: Float) {
-            posture = maxOf(0.0f, posture - amount)
+        fun depletePosture(amount: Float, ignorePoise: Boolean = false) {
+            val poiseFactor = if (ignorePoise) 1.0f else maxOf(0.5f, poise / 100.0f)
+            val loss = amount / poiseFactor
+            posture = maxOf(0.0f, posture - loss)
             if (posture <= 0.0f && !isGuardBroken) {
                 isGuardBroken = true
+                isStaggered = false
+            } else if (posture <= maxPosture * 0.35f && !isGuardBroken) {
+                isStaggered = true
             }
         }
 
@@ -211,6 +219,7 @@ class CombatEngine(
 
         val effectiveDefense = when {
             target.isGuardBroken -> target.defense * 0.5f
+            target.isStaggered -> target.defense * 0.7f
             hitSector == HitSector.REAR -> target.defense * 0.2f
             hitSector == HitSector.FLANKING -> target.defense * 0.6f
             else -> target.defense.toFloat()
@@ -352,13 +361,17 @@ class CombatEngine(
             val hitSector = HitSector.fromIncidentAngle(attackAngle)
             val dirEvent = when {
                 target.isGuardBroken -> DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
+                target.isStaggered -> DirectionalCombatEvent.POSTURE_STAGGERED
                 hitSector == HitSector.REAR -> DirectionalCombatEvent.CRITICAL_BACKSTAB
                 hitSector == HitSector.FLANKING -> DirectionalCombatEvent.GLANCING_FLANK
                 target.shieldType != ShieldType.NONE -> {
                     target.depletePosture(15.0f)
                     DirectionalCombatEvent.FRONTAL_BLOCKED
                 }
-                else -> DirectionalCombatEvent.FRONTAL_STRIKE
+                else -> {
+                    target.depletePosture(10.0f)
+                    DirectionalCombatEvent.FRONTAL_STRIKE
+                }
             }
 
             val sectorTag = when (dirEvent) {
@@ -366,6 +379,9 @@ class CombatEngine(
                 DirectionalCombatEvent.GLANCING_FLANK -> " [⚔️ FLANK]"
                 DirectionalCombatEvent.FRONTAL_BLOCKED -> " [🛡️ BLOCKED]"
                 DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE -> " [⚠️ GUARD BROKEN]"
+                DirectionalCombatEvent.POSTURE_STAGGERED -> " [⚡ STAGGERED]"
+                DirectionalCombatEvent.DEFLECTION_COUNTER -> " [⚔️ DEFLECTED COUNTER]"
+                DirectionalCombatEvent.DEATHBLOW_EXECUTION -> " [⚡ DEATHBLOW EXECUTION]"
                 else -> ""
             }
 
@@ -382,6 +398,7 @@ class CombatEngine(
         val finalSector = HitSector.fromIncidentAngle(attackAngle)
         val finalEvent = when {
             target.isGuardBroken -> DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
+            target.isStaggered -> DirectionalCombatEvent.POSTURE_STAGGERED
             finalSector == HitSector.REAR -> DirectionalCombatEvent.CRITICAL_BACKSTAB
             finalSector == HitSector.FLANKING -> DirectionalCombatEvent.GLANCING_FLANK
             else -> DirectionalCombatEvent.FRONTAL_STRIKE
@@ -711,7 +728,10 @@ class CombatEngine(
                 shieldType = shieldType,
                 posture = posture,
                 maxPosture = maxPosture,
+                poise = poise,
                 isGuardBroken = isGuardBroken,
+                isStaggered = isStaggered,
+                deflectionChance = deflectionChance,
                 turnSpeedDegrees = turnSpeedDegrees
             )
         }

@@ -31,7 +31,10 @@ object CombatCalculator {
         val hitSector: HitSector = HitSector.FRONTAL,
         val incidentAngle: Double = 0.0,
         val directionalEvent: DirectionalCombatEvent = DirectionalCombatEvent.FRONTAL_STRIKE,
-        val isPhalanxProtected: Boolean = false
+        val isPhalanxProtected: Boolean = false,
+        val postureDamageDealt: Float = 0.0f,
+        val isDeflected: Boolean = false,
+        val isDeathblow: Boolean = false
     )
 
     /**
@@ -146,18 +149,45 @@ object CombatCalculator {
         val totalAtk = (atkStat + equipmentAttackBonus).toFloat()
         val totalDef = (defStat + equipmentDefenseBonus).toFloat()
 
-        // Directional armor penetration and posture checks
+        // Directional armor penetration, posture checks, and active deflection
+        val isFrontal = hitSector == HitSector.FRONTAL
+        val canAttemptDeflection = isFrontal && !target.isGuardBroken && !target.isStunned && target.canAct
+        val isDeflected = canAttemptDeflection && (nextRand() < target.deflectionChance)
+
         val effectiveDef: Float
         var directionalEvent: DirectionalCombatEvent
         var critBonusChance = 0.0
         var critMultiplier = 1.5
         var forceCrit = false
+        var isDeathblow = false
 
         when {
+            isDeflected -> {
+                effectiveDef = totalDef
+                directionalEvent = DirectionalCombatEvent.DEFLECTION_COUNTER
+                // Reflected posture damage onto the attacker
+                val reflectedPosture = (target.physDefense * 0.4f + 15.0f).coerceIn(10.0f, 40.0f)
+                attacker.depletePosture(reflectedPosture)
+            }
             target.isGuardBroken -> {
-                // Guard broken: posture depleted, takes 50% extra armor pen and cannot block
-                effectiveDef = totalDef * 0.5f
-                directionalEvent = DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
+                // If attacker crits against guard-broken target, triggers a lethal DEATHBLOW_EXECUTION!
+                val executeRoll = nextRand() < attacker.critChance
+                if (executeRoll) {
+                    effectiveDef = totalDef * 0.2f
+                    forceCrit = true
+                    critMultiplier = 2.5
+                    isDeathblow = true
+                    directionalEvent = DirectionalCombatEvent.DEATHBLOW_EXECUTION
+                } else {
+                    effectiveDef = totalDef * 0.5f
+                    directionalEvent = DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
+                }
+            }
+            target.isStaggered -> {
+                // Staggered: 30% defense bypass and +20% elevated crit vulnerability
+                effectiveDef = totalDef * 0.7f
+                critBonusChance = 0.20
+                directionalEvent = DirectionalCombatEvent.POSTURE_STAGGERED
             }
             hitSector == HitSector.REAR -> {
                 // Rear Arc (Backstab): 80% armor penetration, guaranteed critical hit with 2.0x multiplier
@@ -201,12 +231,22 @@ object CombatCalculator {
             damage = (damage * critMultiplier).toInt()
         }
 
+        // Deathblow execution deals additional 10% target max HP damage
+        if (isDeathblow) {
+            damage += (target.maxHp * 0.10f).toInt()
+        }
+
+        // Active deflection mitigates 75% of incoming damage
+        if (isDeflected) {
+            damage = maxOf(1, (damage * 0.25f).toInt())
+        }
+
         // Shield absorption & posture depletion
         var absorbed = 0
         var finalDamage = damage
 
         // Rear attacks completely bypass directional and barrier shields
-        val shieldCanDeflect = hitSector != HitSector.REAR && !target.isGuardBroken &&
+        val shieldCanDeflect = !isDeflected && hitSector != HitSector.REAR && !target.isGuardBroken &&
                 (phalanxCovered || target.canBlockDirection(incidentAngle) || target.shieldType != ShieldType.NONE || target.shield > 0.0f)
 
         if (shieldCanDeflect && target.shield > 0.0f) {
@@ -234,6 +274,19 @@ object CombatCalculator {
             }
         }
 
+        // Apply general attack posture damage and mark damage taken
+        var postureDamageDealt = 0.0f
+        target.tookDamageThisTurn = true
+        if (isDeflected) {
+            target.depletePosture(2.0f)
+            postureDamageDealt = 2.0f
+        } else {
+            val impactMultiplier = if (attacker.fighterClass == FighterClass.KNUCKLE_POWER || attacker.fighterClass == FighterClass.TANK) 1.5f else 1.0f
+            val basePostureDmg = (maxOf(attacker.physAttack, attacker.damage, attacker.attackPower) * 0.35f + 8.0f) * impactMultiplier
+            target.depletePosture(basePostureDmg)
+            postureDamageDealt = basePostureDmg
+        }
+
         // Generate focus on hit (0.5 focus per hit taken, 1.0 focus for attacker)
         target.focus = minOf(10.0f, target.focus + 0.5f)
         attacker.focus = minOf(10.0f, attacker.focus + 1.0f)
@@ -249,6 +302,9 @@ object CombatCalculator {
             DirectionalCombatEvent.SHIELD_ARC_DEFLECTED -> " [🛡️ DEFLECTED]"
             DirectionalCombatEvent.FRONTAL_BLOCKED -> " [🛡️ BLOCKED]"
             DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE -> " [⚠️ GUARD BROKEN]"
+            DirectionalCombatEvent.POSTURE_STAGGERED -> " [⚡ STAGGERED]"
+            DirectionalCombatEvent.DEFLECTION_COUNTER -> " [⚔️ DEFLECTED COUNTER]"
+            DirectionalCombatEvent.DEATHBLOW_EXECUTION -> " [⚡ DEATHBLOW EXECUTION]"
             DirectionalCombatEvent.FRONTAL_STRIKE -> ""
         }
         val log = "${attacker.name}$critText hits ${target.name}$magicText for $finalDamage dmg!$shieldText$sectorTag"
@@ -265,7 +321,10 @@ object CombatCalculator {
             hitSector = hitSector,
             incidentAngle = incidentAngle,
             directionalEvent = directionalEvent,
-            isPhalanxProtected = phalanxCovered
+            isPhalanxProtected = phalanxCovered,
+            postureDamageDealt = postureDamageDealt,
+            isDeflected = isDeflected,
+            isDeathblow = isDeathblow
         )
     }
 }

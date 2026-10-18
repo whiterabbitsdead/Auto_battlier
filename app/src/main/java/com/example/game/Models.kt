@@ -110,7 +110,10 @@ enum class DirectionalCombatEvent(val displayName: String) {
     SHIELD_ARC_DEFLECTED("Shield Arc Deflected"),
     FRONTAL_STRIKE("Frontal Direct Strike"),
     GUARD_BROKEN_EXPOSURE("Guard Broken Vulnerability"),
-    PHALANX_INTERLOCKED_DEFENSE("Phalanx Interlocked Defense")
+    PHALANX_INTERLOCKED_DEFENSE("Phalanx Interlocked Defense"),
+    POSTURE_STAGGERED("Target Posture Staggered"),
+    DEFLECTION_COUNTER("Active Deflection Counter"),
+    DEATHBLOW_EXECUTION("Deathblow Critical Execution")
 }
 
 data class StatusEffect(
@@ -402,8 +405,14 @@ data class Fighter(
     var shieldType: ShieldType = if (fighterClass == FighterClass.TANK) ShieldType.TOWER else if (physDefense >= 15) ShieldType.STANDARD else ShieldType.NONE,
     var posture: Float = 100.0f,
     var maxPosture: Float = 100.0f,
+    var poise: Float = 100.0f,
+    var maxPoise: Float = poise,
     var isGuardBroken: Boolean = false,
     var guardBreakDuration: Float = 0.0f,
+    var isStaggered: Boolean = false,
+    var staggerDuration: Float = 0.0f,
+    var deflectionChance: Float = if (fighterClass == FighterClass.TANK) 0.20f else if (physDefense >= 15) 0.12f else 0.05f,
+    var tookDamageThisTurn: Boolean = false,
     var engagedTargetId: String? = null,
     var tauntedById: String? = null
 ) {
@@ -449,11 +458,17 @@ data class Fighter(
         return effectiveShield.canDeflect(incidentAngle)
     }
 
-    fun depletePosture(amount: Float) {
-        posture = maxOf(0.0f, posture - amount)
+    fun depletePosture(amount: Float, ignorePoise: Boolean = false) {
+        val poiseFactor = if (ignorePoise) 1.0f else maxOf(0.5f, poise / 100.0f)
+        val loss = amount / poiseFactor
+        posture = maxOf(0.0f, posture - loss)
         if (posture <= 0.0f && !isGuardBroken) {
             isGuardBroken = true
+            isStaggered = false
             guardBreakDuration = 1.0f
+        } else if (posture <= maxPosture * 0.35f && !isGuardBroken) {
+            isStaggered = true
+            staggerDuration = 1.0f
         }
     }
 
@@ -461,17 +476,27 @@ data class Fighter(
         if (stunDuration > 0.0f) stunDuration = maxOf(0.0f, stunDuration - 1.0f)
         if (rootDuration > 0.0f) rootDuration = maxOf(0.0f, rootDuration - 1.0f)
         if (disarmDuration > 0.0f) disarmDuration = maxOf(0.0f, disarmDuration - 1.0f)
+        if (staggerDuration > 0.0f) {
+            staggerDuration = maxOf(0.0f, staggerDuration - 1.0f)
+            if (staggerDuration <= 0.0f) {
+                isStaggered = false
+            }
+        }
         if (guardBreakDuration > 0.0f) {
             guardBreakDuration = maxOf(0.0f, guardBreakDuration - 1.0f)
             if (guardBreakDuration <= 0.0f) {
                 isGuardBroken = false
+                isStaggered = false
                 posture = maxPosture * 0.5f
             }
         } else {
-            posture = minOf(maxPosture, posture + 15.0f)
+            val recoveryRate = if (!tookDamageThisTurn) 25.0f else 12.0f
+            val staminaFactor = if (stamina < 5.0f) 0.5f else 1.0f
+            posture = minOf(maxPosture, posture + recoveryRate * staminaFactor)
         }
         // Stamina passive recovery
         stamina = minOf(maxStamina, stamina + 3.0f)
+        tookDamageThisTurn = false
     }
 
     init {
