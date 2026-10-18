@@ -961,4 +961,175 @@ class BattleEngineTest {
         assertEquals("Enemy should be taunted by tank", tank.id, enemyAfter.tauntedById)
         assertEquals("Enemy should face tank to the North", FacingDirection.NORTH, enemyAfter.facing)
     }
+
+    @Test
+    fun testActiveDeflectionCounterMitigatesDamageAndReflectsPosture() {
+        val deterministicRandom = object : Random() {
+            override fun nextDouble(): Double = 0.5
+        }
+        val target = Fighter(
+            name = "Shieldmaster",
+            hp = 100,
+            physDefense = 30,
+            deflectionChance = 1.0f,
+            dodgeChance = 0.0,
+            x = 3,
+            y = 3,
+            facing = FacingDirection.NORTH
+        )
+        val attacker = Fighter(
+            name = "Aggressor",
+            physAttack = 40,
+            damage = 40,
+            posture = 100.0f,
+            critChance = 0.0,
+            x = 3,
+            y = 2, // Frontal strike
+            facing = FacingDirection.SOUTH
+        )
+
+        val result = CombatCalculator.calculateAttack(attacker, target, deterministicRandom)
+
+        assertEquals(DirectionalCombatEvent.DEFLECTION_COUNTER, result.directionalEvent)
+        assertTrue("Attack should be deflected", result.isDeflected)
+        // Deflection mitigates 75% damage: (40 - 15) * 0.25 = 6
+        assertEquals(6, result.damage)
+        // Reflected posture: 30 * 0.4 + 15 = 27 posture loss on attacker
+        assertEquals(73.0f, attacker.posture, 0.1f)
+    }
+
+    @Test
+    fun testPoiseMitigatesPostureDamageAndStaggersAtThreshold() {
+        val normalFighter = Fighter(
+            name = "Normal Fighter",
+            posture = 100.0f,
+            maxPosture = 100.0f,
+            poise = 100.0f
+        )
+        val heavyJuggernaut = Fighter(
+            name = "Heavy Juggernaut",
+            posture = 100.0f,
+            maxPosture = 100.0f,
+            poise = 200.0f
+        )
+
+        // Deplete 60 posture
+        normalFighter.depletePosture(60.0f)
+        heavyJuggernaut.depletePosture(60.0f)
+
+        // Normal loses 60/1.0 = 60 posture (remaining 40)
+        assertEquals(40.0f, normalFighter.posture, 0.01f)
+        assertFalse("At 40%, normal fighter should not yet be staggered", normalFighter.isStaggered)
+
+        // Heavy loses 60/2.0 = 30 posture (remaining 70)
+        assertEquals(70.0f, heavyJuggernaut.posture, 0.01f)
+        assertFalse(heavyJuggernaut.isStaggered)
+
+        // Deplete 10 more from normal fighter: drops to 30 posture (<= 35%) -> Stagger!
+        normalFighter.depletePosture(10.0f)
+        assertEquals(30.0f, normalFighter.posture, 0.01f)
+        assertTrue("Normal fighter should enter staggered state at <= 35% posture", normalFighter.isStaggered)
+        assertFalse("Staggered fighter is not guard broken", normalFighter.isGuardBroken)
+    }
+
+    @Test
+    fun testStaggerVulnerabilityIncreasesDamage() {
+        val deterministicRandom = object : Random() {
+            override fun nextDouble(): Double = 0.5 // Non-crit roll
+        }
+        val target = Fighter(
+            name = "Staggered Defender",
+            hp = 100,
+            physDefense = 40,
+            posture = 30.0f,
+            isStaggered = true,
+            x = 3,
+            y = 3,
+            facing = FacingDirection.NORTH
+        )
+        val attacker = Fighter(
+            name = "Striker",
+            physAttack = 50,
+            damage = 50,
+            critChance = 0.0,
+            x = 3,
+            y = 2, // Frontal
+            facing = FacingDirection.SOUTH
+        )
+
+        val result = CombatCalculator.calculateAttack(attacker, target, deterministicRandom)
+
+        assertEquals(DirectionalCombatEvent.POSTURE_STAGGERED, result.directionalEvent)
+        // Stagger grants 30% defense bypass: 40 * 0.7 = 28 effective def
+        // Damage = 50 - 28/2 = 36 (instead of 50 - 20 = 30)
+        assertEquals(36, result.damage)
+    }
+
+    @Test
+    fun testDeathblowExecutionOnGuardBrokenTarget() {
+        val deterministicRandom = object : Random() {
+            override fun nextDouble(): Double = 0.5
+        }
+        val target = Fighter(
+            name = "Exposed Defender",
+            hp = 100,
+            maxHp = 100,
+            physDefense = 40,
+            posture = 0.0f,
+            isGuardBroken = true,
+            dodgeChance = 0.0,
+            x = 3,
+            y = 3,
+            facing = FacingDirection.NORTH
+        )
+        val attacker = Fighter(
+            name = "Executioner",
+            physAttack = 40,
+            damage = 40,
+            critChance = 1.0, // Guaranteed deathblow execution
+            x = 3,
+            y = 2,
+            facing = FacingDirection.SOUTH
+        )
+
+        val result = CombatCalculator.calculateAttack(attacker, target, deterministicRandom)
+
+        assertEquals(DirectionalCombatEvent.DEATHBLOW_EXECUTION, result.directionalEvent)
+        assertTrue("Result should be marked as deathblow", result.isDeathblow)
+        // Effective def: 40 * 0.2 = 8 -> base dmg: 40 - 4 = 36
+        // Crit multiplier 2.5x: 36 * 2.5 = 90
+        // +10% target max HP execute: 90 + 10 = 100
+        assertEquals(100, result.damage)
+    }
+
+    @Test
+    fun testDynamicPostureRecoveryWhenUndisturbedVsPressured() {
+        val undisturbed = Fighter(
+            name = "Undisturbed",
+            posture = 20.0f,
+            maxPosture = 100.0f,
+            isStaggered = true,
+            tookDamageThisTurn = false
+        )
+        val pressured = Fighter(
+            name = "Pressured",
+            posture = 20.0f,
+            maxPosture = 100.0f,
+            isStaggered = true,
+            tookDamageThisTurn = true
+        )
+
+        // Turn tick
+        undisturbed.tickTurnStatus()
+        pressured.tickTurnStatus()
+
+        // Undisturbed recovers 25.0f posture: 20 + 25 = 45 (> 35% -> stagger cleared)
+        assertEquals(45.0f, undisturbed.posture, 0.01f)
+        assertFalse("Undisturbed fighter recovers out of stagger", undisturbed.isStaggered)
+
+        // Pressured recovers only 12.0f posture: 20 + 12 = 32 (<= 35% -> remains staggered)
+        assertEquals(32.0f, pressured.posture, 0.01f)
+        assertTrue("Pressured fighter remains staggered", pressured.isStaggered)
+        assertFalse("tookDamageThisTurn should reset after tick", pressured.tookDamageThisTurn)
+    }
 }

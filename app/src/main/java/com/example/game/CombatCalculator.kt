@@ -245,8 +245,8 @@ object CombatCalculator {
         var absorbed = 0
         var finalDamage = damage
 
-        // Rear attacks completely bypass directional and barrier shields
-        val shieldCanDeflect = !isDeflected && hitSector != HitSector.REAR && !target.isGuardBroken &&
+        // Rear attacks completely bypass directional and barrier shields; staggered/guard-broken targets cannot guard
+        val shieldCanDeflect = !isDeflected && !target.isStaggered && hitSector != HitSector.REAR && !target.isGuardBroken &&
                 (phalanxCovered || target.canBlockDirection(incidentAngle) || target.shieldType != ShieldType.NONE || target.shield > 0.0f)
 
         if (shieldCanDeflect && target.shield > 0.0f) {
@@ -260,7 +260,9 @@ object CombatCalculator {
                 absorbed = shieldInt
                 finalDamage -= shieldInt
                 target.shield = 0.0f
-                directionalEvent = DirectionalCombatEvent.FRONTAL_BLOCKED
+                if (directionalEvent == DirectionalCombatEvent.FRONTAL_STRIKE) {
+                    directionalEvent = DirectionalCombatEvent.FRONTAL_BLOCKED
+                }
             }
             // Sustained frontal impact depletes block posture
             target.depletePosture(absorbed.toFloat() * 0.5f + 5.0f)
@@ -269,7 +271,7 @@ object CombatCalculator {
             target.depletePosture(12.0f)
             if (phalanxCovered) {
                 directionalEvent = DirectionalCombatEvent.PHALANX_INTERLOCKED_DEFENSE
-            } else if (target.shieldType != ShieldType.NONE) {
+            } else if (target.shieldType != ShieldType.NONE && directionalEvent == DirectionalCombatEvent.FRONTAL_STRIKE) {
                 directionalEvent = DirectionalCombatEvent.FRONTAL_BLOCKED
             }
         }

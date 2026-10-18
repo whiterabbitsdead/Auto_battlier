@@ -493,6 +493,9 @@ data class Fighter(
             val recoveryRate = if (!tookDamageThisTurn) 25.0f else 12.0f
             val staminaFactor = if (stamina < 5.0f) 0.5f else 1.0f
             posture = minOf(maxPosture, posture + recoveryRate * staminaFactor)
+            if (posture > maxPosture * 0.35f && staggerDuration <= 0.0f) {
+                isStaggered = false
+            }
         }
         // Stamina passive recovery
         stamina = minOf(maxStamina, stamina + 3.0f)

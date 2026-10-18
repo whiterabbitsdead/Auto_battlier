@@ -72,7 +72,8 @@ class CombatEngine(
         var poise: Float = 100.0f,
         var isGuardBroken: Boolean = false,
         var isStaggered: Boolean = false,
-        var deflectionChance: Float = 0.10f,
+        var deflectionChance: Float = 0.0f,
+        var critChance: Double = 0.0,
         var turnSpeedDegrees: Double = 90.0,
         var engagedTargetId: String? = null,
         var tauntedById: String? = null
@@ -327,6 +328,7 @@ class CombatEngine(
         val useSpecial = attacker.isAbilityReady && ability != null
         val actualDamageDealt: Int
         val logMsg: String
+        var combatEvent = DirectionalCombatEvent.FRONTAL_STRIKE
 
         if (useSpecial) {
             // Trigger special ability
@@ -352,15 +354,25 @@ class CombatEngine(
             attacker.mana = minOf(attacker.maxMana, attacker.mana + 25)
             if (attacker.abilityCooldown > 0) attacker.abilityCooldown--
 
-            val damage = calculateDamage(attacker, target)
-            actualDamageDealt = target.takeDamage(damage)
-            val isFatal = !target.isAlive
-
-            // Directional metadata
             val attackAngle = 180.0 - attacker.facing.angleDifference(target.facing)
             val hitSector = HitSector.fromIncidentAngle(attackAngle)
-            val dirEvent = when {
-                target.isGuardBroken -> DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
+            val isDeflected = hitSector == HitSector.FRONTAL && !target.isGuardBroken && !target.isStaggered && (random.nextDouble() < target.deflectionChance)
+
+            var damage = calculateDamage(attacker, target)
+            combatEvent = when {
+                isDeflected -> {
+                    damage = maxOf(1, (damage * 0.25f).toInt())
+                    attacker.depletePosture(20.0f)
+                    DirectionalCombatEvent.DEFLECTION_COUNTER
+                }
+                target.isGuardBroken -> {
+                    if (random.nextDouble() < attacker.critChance) {
+                        damage = (damage * 2.5).toInt() + (target.maxHp * 0.1f).toInt()
+                        DirectionalCombatEvent.DEATHBLOW_EXECUTION
+                    } else {
+                        DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
+                    }
+                }
                 target.isStaggered -> DirectionalCombatEvent.POSTURE_STAGGERED
                 hitSector == HitSector.REAR -> DirectionalCombatEvent.CRITICAL_BACKSTAB
                 hitSector == HitSector.FLANKING -> DirectionalCombatEvent.GLANCING_FLANK
@@ -374,7 +386,10 @@ class CombatEngine(
                 }
             }
 
-            val sectorTag = when (dirEvent) {
+            actualDamageDealt = target.takeDamage(damage)
+            val isFatal = !target.isAlive
+
+            val sectorTag = when (combatEvent) {
                 DirectionalCombatEvent.CRITICAL_BACKSTAB -> " [🗡️ BACKSTAB]"
                 DirectionalCombatEvent.GLANCING_FLANK -> " [⚔️ FLANK]"
                 DirectionalCombatEvent.FRONTAL_BLOCKED -> " [🛡️ BLOCKED]"
@@ -396,13 +411,6 @@ class CombatEngine(
 
         val attackAngle = 180.0 - attacker.facing.angleDifference(target.facing)
         val finalSector = HitSector.fromIncidentAngle(attackAngle)
-        val finalEvent = when {
-            target.isGuardBroken -> DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
-            target.isStaggered -> DirectionalCombatEvent.POSTURE_STAGGERED
-            finalSector == HitSector.REAR -> DirectionalCombatEvent.CRITICAL_BACKSTAB
-            finalSector == HitSector.FLANKING -> DirectionalCombatEvent.GLANCING_FLANK
-            else -> DirectionalCombatEvent.FRONTAL_STRIKE
-        }
 
         return CombatAction(
             round = round,
@@ -421,7 +429,7 @@ class CombatEngine(
             isSpecialAbility = useSpecial,
             abilityName = ability?.name,
             hitSector = finalSector,
-            combatEvent = finalEvent
+            combatEvent = combatEvent
         )
     }
 

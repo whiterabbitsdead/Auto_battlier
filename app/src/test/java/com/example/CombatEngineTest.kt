@@ -652,4 +652,106 @@ class CombatEngineTest {
         // 50% defense bypass -> defense = 20 -> 50 - 20/2 = 40
         assertEquals(40, action.damageDealt)
     }
+
+    @Test
+    fun testCombatEngineActiveDeflectionMitigatesDamageAndReflectsPosture() {
+        val log = CombatLog()
+        val engine = CombatEngine(combatLog = log)
+
+        val attacker = CombatEngine.Combatant(
+            name = "Striker",
+            hp = 100,
+            attack = 50,
+            speed = 10,
+            posture = 100.0f,
+            team = CombatEngine.Team.TEAM_A,
+            facing = FacingDirection.NORTH
+        )
+        val deflectingTarget = CombatEngine.Combatant(
+            name = "Shieldmaster",
+            hp = 200,
+            attack = 10,
+            speed = 5,
+            defense = 40,
+            team = CombatEngine.Team.TEAM_B,
+            facing = FacingDirection.SOUTH, // Frontal
+            deflectionChance = 1.0f
+        )
+
+        val action = engine.processTurn(attacker, deflectingTarget, log)
+
+        assertEquals(DirectionalCombatEvent.DEFLECTION_COUNTER, action.combatEvent)
+        assertTrue("Log should include deflection counter tag", action.logMessage.contains("[⚔️ DEFLECTED COUNTER]"))
+        // Base damage = 50 - 20 = 30. Deflected 75% mitigation = 7
+        assertEquals(7, action.damageDealt)
+        // Attacker posture counter-damaged by 20
+        assertEquals(80.0f, attacker.posture, 0.01f)
+    }
+
+    @Test
+    fun testCombatEngineStaggeredTargetTakesIncreasedDamage() {
+        val log = CombatLog()
+        val engine = CombatEngine(combatLog = log)
+
+        val attacker = CombatEngine.Combatant(
+            name = "Striker",
+            hp = 100,
+            attack = 50,
+            speed = 10,
+            team = CombatEngine.Team.TEAM_A,
+            facing = FacingDirection.NORTH
+        )
+        val staggeredTarget = CombatEngine.Combatant(
+            name = "Staggered Target",
+            hp = 200,
+            attack = 10,
+            speed = 5,
+            defense = 40,
+            team = CombatEngine.Team.TEAM_B,
+            facing = FacingDirection.SOUTH,
+            isStaggered = true,
+            deflectionChance = 0.0f
+        )
+
+        val action = engine.processTurn(attacker, staggeredTarget, log)
+
+        assertEquals(DirectionalCombatEvent.POSTURE_STAGGERED, action.combatEvent)
+        assertTrue("Log should include staggered tag", action.logMessage.contains("[⚡ STAGGERED]"))
+        // 30% defense bypass -> defense = 28 -> 50 - 14 = 36
+        assertEquals(36, action.damageDealt)
+    }
+
+    @Test
+    fun testCombatEngineDeathblowExecutionOnCritGuardBroken() {
+        val log = CombatLog()
+        val engine = CombatEngine(combatLog = log)
+
+        val attacker = CombatEngine.Combatant(
+            name = "Executioner",
+            hp = 100,
+            attack = 50,
+            speed = 10,
+            critChance = 1.0, // Guaranteed deathblow execute
+            team = CombatEngine.Team.TEAM_A,
+            facing = FacingDirection.NORTH
+        )
+        val brokenTarget = CombatEngine.Combatant(
+            name = "Vulnerable Target",
+            hp = 200,
+            maxHp = 200,
+            attack = 10,
+            speed = 5,
+            defense = 40,
+            team = CombatEngine.Team.TEAM_B,
+            facing = FacingDirection.SOUTH,
+            isGuardBroken = true
+        )
+
+        val action = engine.processTurn(attacker, brokenTarget, log)
+
+        assertEquals(DirectionalCombatEvent.DEATHBLOW_EXECUTION, action.combatEvent)
+        assertTrue("Log should include deathblow execution tag", action.logMessage.contains("[⚡ DEATHBLOW EXECUTION]"))
+        // Base damage: 50 - 20/2 = 40. Deathblow: 40 * 2.5 + 200 * 0.1 = 100 + 20 = 120
+        assertEquals(120, action.damageDealt)
+    }
 }
