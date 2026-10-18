@@ -211,20 +211,20 @@ class CombatEngine(
         }
 
         // Directional mitigation
-        val attackAngle = if (attacker.team == target.team && attacker.facing == target.facing) {
-            0.0 // Default 1v1 test between un-teamed units faces each other frontally
-        } else {
-            180.0 - attacker.facing.angleDifference(target.facing)
-        }
+        val attackAngle = calculateIncidentAngle(attacker, target)
         val hitSector = HitSector.fromIncidentAngle(attackAngle)
 
-        val effectiveDefense = when {
-            target.isGuardBroken -> target.defense * 0.5f
-            target.isStaggered -> target.defense * 0.7f
-            hitSector == HitSector.REAR -> target.defense * 0.2f
-            hitSector == HitSector.FLANKING -> target.defense * 0.6f
-            else -> target.defense.toFloat()
+        val directionalDefenseFactor = when (hitSector) {
+            HitSector.REAR -> 0.2f
+            HitSector.FLANKING -> 0.6f
+            else -> 1.0f
         }
+        val postureDefenseFactor = when {
+            target.isGuardBroken -> 0.5f
+            target.isStaggered -> 0.7f
+            else -> 1.0f
+        }
+        val effectiveDefense = target.defense * minOf(directionalDefenseFactor, postureDefenseFactor)
 
         val defenseMitigation = (effectiveDefense / 2.0f).coerceAtLeast(0.0f)
         var damage = (rawAttack - defenseMitigation).toInt().coerceAtLeast(1)
@@ -232,6 +232,14 @@ class CombatEngine(
             damage = (damage * 2.0).toInt()
         }
         return damage
+    }
+
+    fun calculateIncidentAngle(attacker: Combatant, target: Combatant): Double {
+        return if (attacker.team == target.team && attacker.facing == target.facing) {
+            0.0 // Default 1v1 test between un-teamed units faces each other frontally
+        } else {
+            180.0 - attacker.facing.angleDifference(target.facing)
+        }
     }
 
     /**
@@ -354,7 +362,7 @@ class CombatEngine(
             attacker.mana = minOf(attacker.maxMana, attacker.mana + 25)
             if (attacker.abilityCooldown > 0) attacker.abilityCooldown--
 
-            val attackAngle = 180.0 - attacker.facing.angleDifference(target.facing)
+            val attackAngle = calculateIncidentAngle(attacker, target)
             val hitSector = HitSector.fromIncidentAngle(attackAngle)
             val isDeflected = hitSector == HitSector.FRONTAL && !target.isGuardBroken && !target.isStaggered && (random.nextDouble() < target.deflectionChance)
 
@@ -373,7 +381,11 @@ class CombatEngine(
                         DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
                     }
                 }
-                target.isStaggered -> DirectionalCombatEvent.POSTURE_STAGGERED
+                target.isStaggered -> {
+                    val postureDmg = if (target.shieldType != ShieldType.NONE) 15.0f else 10.0f
+                    target.depletePosture(postureDmg)
+                    DirectionalCombatEvent.POSTURE_STAGGERED
+                }
                 hitSector == HitSector.REAR -> DirectionalCombatEvent.CRITICAL_BACKSTAB
                 hitSector == HitSector.FLANKING -> DirectionalCombatEvent.GLANCING_FLANK
                 target.shieldType != ShieldType.NONE -> {
@@ -740,6 +752,7 @@ class CombatEngine(
                 isGuardBroken = isGuardBroken,
                 isStaggered = isStaggered,
                 deflectionChance = deflectionChance,
+                critChance = critChance,
                 turnSpeedDegrees = turnSpeedDegrees
             )
         }

@@ -12,10 +12,10 @@ object CombatCalculator {
     }
 
     /**
-     * Manhattan distance (fallback and backward-compatibility)
+     * Distance matching auto-chess grid standard (Chebyshev metric)
      */
     fun distance(f1: Fighter, f2: Fighter): Int {
-        return abs(f1.x - f2.x) + abs(f1.y - f2.y)
+        return chebyshevDistance(f1, f2)
     }
 
     data class AttackResult(
@@ -66,16 +66,17 @@ object CombatCalculator {
      */
     fun isProtectedByPhalanx(attacker: Fighter, target: Fighter, allies: List<Fighter>): Boolean {
         if (allies.isEmpty()) return false
-        val attackVecX = attacker.x - target.x
         val phalanxAllies = allies.filter { ally ->
             ally.isAlive && ally.id != target.id &&
+            !ally.isGuardBroken && !ally.isStaggered &&
             chebyshevDistance(ally, target) == 1 &&
             target.facing.angleDifference(ally.facing) <= 45.0 &&
             (ally.shieldType != ShieldType.NONE || ally.fighterClass == FighterClass.TANK || ally.physDefense >= 15)
         }
+        val attackLateral = -target.facing.dy * (attacker.x - target.x) + target.facing.dx * (attacker.y - target.y)
         return phalanxAllies.any { ally ->
-            val allyVecX = ally.x - target.x
-            (attackVecX > 0 && allyVecX > 0) || (attackVecX < 0 && allyVecX < 0)
+            val allyLateral = -target.facing.dy * (ally.x - target.x) + target.facing.dx * (ally.y - target.y)
+            (attackLateral > 0 && allyLateral > 0) || (attackLateral < 0 && allyLateral < 0)
         }
     }
 
@@ -151,7 +152,7 @@ object CombatCalculator {
 
         // Directional armor penetration, posture checks, and active deflection
         val isFrontal = hitSector == HitSector.FRONTAL
-        val canAttemptDeflection = isFrontal && !target.isGuardBroken && !target.isStunned && target.canAct
+        val canAttemptDeflection = isFrontal && !target.isGuardBroken && !target.isStaggered && !target.isStunned && target.canAct
         val isDeflected = canAttemptDeflection && (nextRand() < target.deflectionChance)
 
         val effectiveDef: Float
@@ -161,55 +162,53 @@ object CombatCalculator {
         var forceCrit = false
         var isDeathblow = false
 
-        when {
-            isDeflected -> {
-                effectiveDef = totalDef
-                directionalEvent = DirectionalCombatEvent.DEFLECTION_COUNTER
-                // Reflected posture damage onto the attacker
-                val reflectedPosture = (target.physDefense * 0.4f + 15.0f).coerceIn(10.0f, 40.0f)
-                attacker.depletePosture(reflectedPosture)
-            }
-            target.isGuardBroken -> {
-                // If attacker crits against guard-broken target, triggers a lethal DEATHBLOW_EXECUTION!
-                val executeRoll = nextRand() < attacker.critChance
-                if (executeRoll) {
-                    effectiveDef = totalDef * 0.2f
-                    forceCrit = true
-                    critMultiplier = 2.5
-                    isDeathblow = true
-                    directionalEvent = DirectionalCombatEvent.DEATHBLOW_EXECUTION
-                } else {
-                    effectiveDef = totalDef * 0.5f
-                    directionalEvent = DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
-                }
-            }
-            target.isStaggered -> {
-                // Staggered: 30% defense bypass and +20% elevated crit vulnerability
-                effectiveDef = totalDef * 0.7f
-                critBonusChance = 0.20
-                directionalEvent = DirectionalCombatEvent.POSTURE_STAGGERED
-            }
-            hitSector == HitSector.REAR -> {
-                // Rear Arc (Backstab): 80% armor penetration, guaranteed critical hit with 2.0x multiplier
-                effectiveDef = totalDef * 0.2f
+        if (isDeflected) {
+            effectiveDef = totalDef
+            directionalEvent = DirectionalCombatEvent.DEFLECTION_COUNTER
+            // Reflected posture damage onto the attacker
+            val reflectedPosture = (target.physDefense * 0.4f + 15.0f).coerceIn(10.0f, 40.0f)
+            attacker.depletePosture(reflectedPosture)
+        } else {
+            val executeRoll = target.isGuardBroken && (nextRand() < attacker.critChance)
+            if (executeRoll) {
+                isDeathblow = true
                 forceCrit = true
-                critMultiplier = 2.0
-                directionalEvent = DirectionalCombatEvent.CRITICAL_BACKSTAB
+                critMultiplier = 2.5
             }
-            hitSector == HitSector.FLANKING -> {
-                // Flanking Arc: 40% armor bypass, +20% elevated crit chance
-                effectiveDef = totalDef * 0.6f
-                critBonusChance = 0.20
-                directionalEvent = DirectionalCombatEvent.GLANCING_FLANK
+
+            val directionalDefFactor = when (hitSector) {
+                HitSector.REAR -> 0.2f
+                HitSector.FLANKING -> 0.6f
+                else -> 1.0f
             }
-            phalanxCovered -> {
-                effectiveDef = totalDef
-                directionalEvent = DirectionalCombatEvent.PHALANX_INTERLOCKED_DEFENSE
+            if (hitSector == HitSector.REAR) {
+                forceCrit = true
+                critMultiplier = maxOf(critMultiplier, 2.0)
             }
-            else -> {
-                // Frontal Arc: Standard defense applies
-                effectiveDef = totalDef
-                directionalEvent = DirectionalCombatEvent.FRONTAL_STRIKE
+            if (hitSector == HitSector.FLANKING) {
+                critBonusChance = maxOf(critBonusChance, 0.20)
+            }
+
+            val postureDefFactor = when {
+                isDeathblow -> 0.2f
+                target.isGuardBroken -> 0.5f
+                target.isStaggered -> {
+                    critBonusChance = maxOf(critBonusChance, 0.20)
+                    0.7f
+                }
+                else -> 1.0f
+            }
+
+            effectiveDef = totalDef * minOf(directionalDefFactor, postureDefFactor)
+
+            directionalEvent = when {
+                isDeathblow -> DirectionalCombatEvent.DEATHBLOW_EXECUTION
+                hitSector == HitSector.REAR -> DirectionalCombatEvent.CRITICAL_BACKSTAB
+                target.isGuardBroken -> DirectionalCombatEvent.GUARD_BROKEN_EXPOSURE
+                target.isStaggered -> DirectionalCombatEvent.POSTURE_STAGGERED
+                hitSector == HitSector.FLANKING -> DirectionalCombatEvent.GLANCING_FLANK
+                phalanxCovered -> DirectionalCombatEvent.PHALANX_INTERLOCKED_DEFENSE
+                else -> DirectionalCombatEvent.FRONTAL_STRIKE
             }
         }
 
@@ -224,7 +223,7 @@ object CombatCalculator {
 
         // Critical strike check
         var isCrit = forceCrit
-        if (!isCrit && nextRand() < (attacker.critChance + critBonusChance)) {
+        if (!isCrit && !target.isGuardBroken && nextRand() < (attacker.critChance + critBonusChance)) {
             isCrit = true
         }
         if (isCrit) {
@@ -247,7 +246,7 @@ object CombatCalculator {
 
         // Rear attacks completely bypass directional and barrier shields; staggered/guard-broken targets cannot guard
         val shieldCanDeflect = !isDeflected && !target.isStaggered && hitSector != HitSector.REAR && !target.isGuardBroken &&
-                (phalanxCovered || target.canBlockDirection(incidentAngle) || target.shieldType != ShieldType.NONE || target.shield > 0.0f)
+                (phalanxCovered || target.canBlockDirection(incidentAngle))
 
         if (shieldCanDeflect && target.shield > 0.0f) {
             val shieldInt = target.shield.toInt()

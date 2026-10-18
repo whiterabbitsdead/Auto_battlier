@@ -478,9 +478,6 @@ data class Fighter(
         if (disarmDuration > 0.0f) disarmDuration = maxOf(0.0f, disarmDuration - 1.0f)
         if (staggerDuration > 0.0f) {
             staggerDuration = maxOf(0.0f, staggerDuration - 1.0f)
-            if (staggerDuration <= 0.0f) {
-                isStaggered = false
-            }
         }
         if (guardBreakDuration > 0.0f) {
             guardBreakDuration = maxOf(0.0f, guardBreakDuration - 1.0f)

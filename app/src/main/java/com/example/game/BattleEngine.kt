@@ -213,6 +213,11 @@ class BattleEngine(
             val isSupportAbility = ability.targetType in listOf(AbilityTargetType.ALLY_SINGLE, AbilityTargetType.ALLY_ALL, AbilityTargetType.SELF) &&
                     (ability.effectType == AbilityEffectType.HEAL || ability.healAmount > 0 || ability.shieldAmount > 0)
 
+            val isFlanker = currentActor.fighterClass in listOf(FighterClass.ASSASSIN, FighterClass.CONVICT, FighterClass.HUNTERS) ||
+                    (target.engagedTargetId != null && target.engagedTargetId != currentActor.id)
+            val incidentAngle = CombatCalculator.calculateIncidentAngle(currentActor, target)
+            val hitSector = HitSector.fromIncidentAngle(incidentAngle)
+
             if (canCastSpecial && (isSupportAbility || dist <= currentActor.attackRange)) {
                 // Execute Special Ability
                 currentActor.mana = 0
@@ -349,7 +354,7 @@ class BattleEngine(
                         }
                     }
                 }
-            } else if (dist <= currentActor.attackRange) {
+            } else if (dist <= currentActor.attackRange && !(isFlanker && hitSector == HitSector.FRONTAL && moveTowards(currentActor, target, updatedPlayerFighters + updatedOpponentFighters))) {
                 // Attacker turns towards the target (respecting turning inertia)
                 currentActor.turnTowards(target.x, target.y)
 
@@ -604,11 +609,11 @@ class BattleEngine(
         takenMap[receiverId] = (takenMap[receiverId] ?: 0) + amount
     }
 
-    private fun distance(f1: Fighter, f2: Fighter): Int {
-        return abs(f1.x - f2.x) + abs(f1.y - f2.y)
+    fun distance(f1: Fighter, f2: Fighter): Int {
+        return CombatCalculator.chebyshevDistance(f1, f2)
     }
 
-    fun moveTowards(actor: Fighter, target: Fighter, allUnits: List<Fighter> = emptyList()) {
+    fun moveTowards(actor: Fighter, target: Fighter, allUnits: List<Fighter> = emptyList()): Boolean {
         val oldX = actor.x
         val oldY = actor.y
 
@@ -617,73 +622,125 @@ class BattleEngine(
         val isFlanker = actor.fighterClass in listOf(FighterClass.ASSASSIN, FighterClass.CONVICT, FighterClass.HUNTERS) ||
                 (target.engagedTargetId != null && target.engagedTargetId != actor.id)
 
-        var destX = target.x
-        var destY = target.y
+        val occupiedTiles = allUnits.filter { it.isAlive && it.id != actor.id }.map { it.x to it.y }.toSet()
 
+        val candidateGoals = mutableListOf<Pair<Int, Int>>()
         if (isFlanker) {
-            // Rear tile: opposite to target's facing vector
-            val rearX = (target.x - target.facing.dx).coerceIn(0, 7)
-            val rearY = (target.y - target.facing.dy).coerceIn(0, 7)
-            val rearOccupied = allUnits.any { it.isAlive && it.id != actor.id && it.x == rearX && it.y == rearY }
-
-            if (!rearOccupied && (rearX != target.x || rearY != target.y)) {
-                destX = rearX
-                destY = rearY
-            } else {
-                // Flank tile (perpendicular)
-                val flankX = (target.x + target.facing.dy).coerceIn(0, 7)
-                val flankY = (target.y - target.facing.dx).coerceIn(0, 7)
-                val flankOccupied = allUnits.any { it.isAlive && it.id != actor.id && it.x == flankX && it.y == flankY }
-                if (!flankOccupied && (flankX != target.x || flankY != target.y)) {
-                    destX = flankX
-                    destY = flankY
-                }
+            val rear = (target.x - target.facing.dx).coerceIn(0, 7) to (target.y - target.facing.dy).coerceIn(0, 7)
+            if (rear !in occupiedTiles && (rear.first != target.x || rear.second != target.y)) {
+                candidateGoals.add(rear)
+            }
+            val flank1 = (target.x + target.facing.dy).coerceIn(0, 7) to (target.y - target.facing.dx).coerceIn(0, 7)
+            if (flank1 !in occupiedTiles && (flank1.first != target.x || flank1.second != target.y)) {
+                candidateGoals.add(flank1)
+            }
+            val flank2 = (target.x - target.facing.dy).coerceIn(0, 7) to (target.y + target.facing.dx).coerceIn(0, 7)
+            if (flank2 !in occupiedTiles && (flank2.first != target.x || flank2.second != target.y)) {
+                candidateGoals.add(flank2)
             }
         }
 
-        val dx = destX - actor.x
-        val dy = destY - actor.y
+        val goal = candidateGoals.minByOrNull { (gx, gy) ->
+            CombatCalculator.chebyshevDistance(actor, Fighter(x = gx, y = gy))
+        } ?: (target.x to target.y)
 
-        val stepX = if (dx > 0) 1 else if (dx < 0) -1 else 0
-        val stepY = if (dy > 0) 1 else if (dy < 0) -1 else 0
-
-        var moved = false
-        if (abs(dx) >= abs(dy) && stepX != 0) {
-            val candidateX = (actor.x + stepX).coerceIn(0, 7)
-            val occupied = allUnits.any { it.isAlive && it.id != actor.id && it.x == candidateX && it.y == actor.y }
-            if (!occupied) {
-                actor.x = candidateX
-                moved = true
-            }
-        }
-
-        if (!moved && stepY != 0) {
-            val candidateY = (actor.y + stepY).coerceIn(0, 7)
-            val occupied = allUnits.any { it.isAlive && it.id != actor.id && it.x == actor.x && it.y == candidateY }
-            if (!occupied) {
-                actor.y = candidateY
-                moved = true
-            }
-        }
-
-        // Try alternative axis if primary was blocked
-        if (!moved && stepX != 0) {
-            val candidateX = (actor.x + stepX).coerceIn(0, 7)
-            val occupied = allUnits.any { it.isAlive && it.id != actor.id && it.x == candidateX && it.y == actor.y }
-            if (!occupied) {
-                actor.x = candidateX
-                moved = true
-            }
+        val nextStep = findNextStep(actor.x, actor.y, goal.first, goal.second, occupiedTiles)
+        if (nextStep != null) {
+            actor.x = nextStep.first
+            actor.y = nextStep.second
         }
 
         // Update facing automatically upon movement (facing the direction of travel)
         if (actor.x != oldX || actor.y != oldY) {
             actor.facing = FacingDirection.fromDelta(actor.x - oldX, actor.y - oldY)
+            return true
         }
+        return false
+    }
+
+    private fun findNextStep(
+        startX: Int,
+        startY: Int,
+        targetX: Int,
+        targetY: Int,
+        occupiedTiles: Set<Pair<Int, Int>>
+    ): Pair<Int, Int>? {
+        if (startX == targetX && startY == targetY) return null
+
+        val moves = listOf(
+            0 to -1, 0 to 1, 1 to 0, -1 to 0,
+            1 to -1, -1 to -1, 1 to 1, -1 to 1
+        )
+
+        val isTargetOccupied = (targetX to targetY) in occupiedTiles
+        val targetGoals = if (isTargetOccupied) {
+            moves.map { (dx, dy) -> (targetX + dx) to (targetY + dy) }
+                .filter { (x, y) -> x in 0..7 && y in 0..7 && (x to y) !in occupiedTiles }
+                .toSet()
+        } else {
+            setOf(targetX to targetY)
+        }
+
+        if (targetGoals.isEmpty() || (startX to startY) in targetGoals) return null
+
+        val queue = ArrayDeque<Pair<Int, Int>>()
+        val visited = mutableSetOf<Pair<Int, Int>>()
+        val parent = mutableMapOf<Pair<Int, Int>, Pair<Int, Int>>()
+
+        queue.add(startX to startY)
+        visited.add(startX to startY)
+
+        var reachedGoal: Pair<Int, Int>? = null
+
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            if (current in targetGoals) {
+                reachedGoal = current
+                break
+            }
+
+            // Sort moves by Chebyshev distance to target to explore direct routes first
+            val sortedMoves = moves.sortedBy { (mdx, mdy) ->
+                val nx = current.first + mdx
+                val ny = current.second + mdy
+                CombatCalculator.chebyshevDistance(Fighter(x = nx, y = ny), Fighter(x = targetX, y = targetY))
+            }
+
+            for ((mdx, mdy) in sortedMoves) {
+                val nx = current.first + mdx
+                val ny = current.second + mdy
+                val next = nx to ny
+                if (nx in 0..7 && ny in 0..7 && next !in visited && next !in occupiedTiles) {
+                    visited.add(next)
+                    parent[next] = current
+                    queue.add(next)
+                }
+            }
+        }
+
+        if (reachedGoal == null) {
+            return moves.map { (dx, dy) -> (startX + dx) to (startY + dy) }
+                .filter { (x, y) -> x in 0..7 && y in 0..7 && (x to y) !in occupiedTiles }
+                .minByOrNull { (x, y) ->
+                    CombatCalculator.chebyshevDistance(Fighter(x = x, y = y), Fighter(x = targetX, y = targetY))
+                }
+        }
+
+        var curr = reachedGoal
+        while (parent[curr] != null && parent[curr] != (startX to startY)) {
+            curr = parent[curr]!!
+        }
+        return curr
     }
 
     companion object {
         private val defaultEngine = BattleEngine()
+
+        fun moveTowards(actor: Fighter, target: Fighter, allUnits: List<Fighter> = emptyList()): Boolean =
+            defaultEngine.moveTowards(actor, target, allUnits)
+
+        fun distance(f1: Fighter, f2: Fighter): Int =
+            defaultEngine.distance(f1, f2)
 
         fun calculateDamage(attacker: Fighter, target: Fighter): Int =
             defaultEngine.calculateDamage(attacker, target)
